@@ -32,13 +32,11 @@ $ sudo usermod -a -G dialout <username>
 
 ```
 $ sudo chmod a+rw /dev/tty*
-
 ```
 ###### or you could use the following command
 
 ```
 $ sudo chmod 666 /dev/tty${USB/ACM}
-
 ```
 
 ###### Install all the dependencies for the libcaer library by executing the following command.
@@ -47,7 +45,6 @@ $ sudo chmod 666 /dev/tty${USB/ACM}
 $ sudo apt-get install build-essential cmake pkg-config libusb-1.0-0-dev
 $ sudo apt update
 $ sudo apt install libserialport-dev
-
 ```
 
 
@@ -57,7 +54,6 @@ $ sudo apt install libserialport-dev
 $ sudo add-apt-repository ppa:inivation-ppa/inivation
 $ sudo apt-get update
 $ sudo apt-get install libcaer-dev
-
 ```
 
 
@@ -68,11 +64,9 @@ $ sudo apt-get install libcaer-dev
 ###### Step 1. Build the project by executing the following commands.
 
 ```
-
 $ cd camera
 $ catkin_make   
 $ source devel/setup.bash
-
 ```
 
 ###### Step 2. Open three terminals and execute the following command.
@@ -81,21 +75,18 @@ $ source devel/setup.bash
 
 ```
 $ roscore
-
 ```
 
 ###### Terminal 2 
 
 ```
 $ rosrun event_based_camera event_based_camera
-
 ```
 
 ###### Terminal 3 
 
 ```
 $ rostopic pub -1 /cam event_based_camera/Control "sos: 1"
-
 ```
 
 # #########################################################################################################################################################################################
@@ -106,7 +97,6 @@ $ rostopic pub -1 /cam event_based_camera/Control "sos: 1"
 
 ```
 $ source devel/setup.bash
-
 ```
 
 ###### and then execute the commands in terminal 2 & 3 above.
