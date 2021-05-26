@@ -61,3 +61,69 @@ $ sudo apt-get install libcaer-dev
 ```
 
 
+# #########################################################################################################################################################################################
+
+###### Now to run the project follow the following steps.
+
+###### Step 1. Build the project by executing the following commands.
+
+```
+
+$ cd camera
+$ catkin_make   
+$ source devel/setup.bash
+
+```
+
+###### Step 2. Open three terminals and execute the following command.
+
+###### Terminal 1
+
+```
+$ roscore
+
+```
+
+###### Terminal 2 
+
+```
+$ rosrun event_based_camera event_based_camera
+
+```
+
+###### Terminal 3 
+
+```
+$ rostopic pub -1 /cam event_based_camera/Control "sos: 1"
+
+```
+
+# #########################################################################################################################################################################################
+
+###### Note: If you are getting error while executing the commands in terminal 2 & 3, there might be a problem of sourcing. So, you can execute the folloing command 
+
+```
+$ source devel/setup.bash
+
+```
+
+###### and then execute the commands in terminal 2 & 3 above.
+
+
+# #########################################################################################################################################################################################
+
+
+###### Note : You can also eliminate retyping the "$ source devel/setup.bash" command, by adding it in the .bashrc file. To do so you need to follow the commands
+###### Open the .bashrc file. Since, I'm using vscode I will follow the following command
+
+```
+$ code ~/.bashrc
+```
+
+###### and paste the following command at the bottom of the file 
+
+```
+source ~/KTH-Neuro-Computing-Systems-Event-Based-Camera-eDVS4337/camera/devel/setup.bash
+```
+
+###### Once, it is done you need to restart the terminal, and follow the procedure to run the scripts.
