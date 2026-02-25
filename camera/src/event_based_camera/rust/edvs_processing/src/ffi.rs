@@ -45,9 +45,10 @@ pub unsafe extern "C" fn edvs_temporal_filter_process(
     if filter.is_null() || event.is_null() {
         return false;
     }
-    let filter = &mut *filter;
-    let event = &*event;
-    filter.filter(event)
+    let filter_ref = &mut *filter;
+    let event_ref = &*event;
+    panic::catch_unwind(panic::AssertUnwindSafe(|| filter_ref.filter(event_ref)))
+        .unwrap_or(false)
 }
 
 /// # Safety
@@ -99,9 +100,10 @@ pub unsafe extern "C" fn edvs_hot_pixel_filter_process(
     if filter.is_null() || event.is_null() {
         return false;
     }
-    let filter = &mut *filter;
-    let event = &*event;
-    filter.filter(event)
+    let filter_ref = &mut *filter;
+    let event_ref = &*event;
+    panic::catch_unwind(panic::AssertUnwindSafe(|| filter_ref.filter(event_ref)))
+        .unwrap_or(false)
 }
 
 /// # Safety
@@ -147,9 +149,9 @@ pub unsafe extern "C" fn edvs_accumulator_accumulate(
     if acc.is_null() || event.is_null() {
         return;
     }
-    let acc = &mut *acc;
-    let event = &*event;
-    acc.accumulate(event);
+    let acc_ref = &mut *acc;
+    let event_ref = &*event;
+    let _ = panic::catch_unwind(panic::AssertUnwindSafe(|| acc_ref.accumulate(event_ref)));
 }
 
 /// # Safety
@@ -235,9 +237,10 @@ pub unsafe extern "C" fn edvs_refractory_filter_process(
     if filter.is_null() || event.is_null() {
         return false;
     }
-    let filter = &mut *filter;
-    let event = &*event;
-    filter.filter(event)
+    let filter_ref = &mut *filter;
+    let event_ref = &*event;
+    panic::catch_unwind(panic::AssertUnwindSafe(|| filter_ref.filter(event_ref)))
+        .unwrap_or(false)
 }
 
 /// # Safety
@@ -279,9 +282,10 @@ pub unsafe extern "C" fn edvs_polarity_filter_process(
     if filter.is_null() || event.is_null() {
         return false;
     }
-    let filter = &*filter;
-    let event = &*event;
-    filter.filter(event)
+    let filter_ref = &*filter;
+    let event_ref = &*event;
+    panic::catch_unwind(panic::AssertUnwindSafe(|| filter_ref.filter(event_ref)))
+        .unwrap_or(false)
 }
 
 /// # Safety
@@ -327,9 +331,10 @@ pub unsafe extern "C" fn edvs_roi_filter_process(
     if filter.is_null() || event.is_null() {
         return false;
     }
-    let filter = &*filter;
-    let event = &*event;
-    filter.filter(event)
+    let filter_ref = &*filter;
+    let event_ref = &*event;
+    panic::catch_unwind(panic::AssertUnwindSafe(|| filter_ref.filter(event_ref)))
+        .unwrap_or(false)
 }
 
 /// # Safety
@@ -370,9 +375,10 @@ pub unsafe extern "C" fn edvs_decimation_filter_process(
     if filter.is_null() || event.is_null() {
         return false;
     }
-    let filter = &mut *filter;
-    let event = &*event;
-    filter.filter(event)
+    let filter_ref = &mut *filter;
+    let event_ref = &*event;
+    panic::catch_unwind(panic::AssertUnwindSafe(|| filter_ref.filter(event_ref)))
+        .unwrap_or(false)
 }
 
 /// # Safety
@@ -421,9 +427,10 @@ pub unsafe extern "C" fn edvs_spatial_transform_apply(
     if transform.is_null() || event.is_null() {
         return false;
     }
-    let transform = &*transform;
-    let event = &mut *event;
-    transform.apply(event)
+    let transform_ref = &*transform;
+    let event_ref = &mut *event;
+    panic::catch_unwind(panic::AssertUnwindSafe(|| transform_ref.apply(event_ref)))
+        .unwrap_or(false)
 }
 
 /// # Safety
@@ -475,9 +482,9 @@ pub unsafe extern "C" fn edvs_decay_accumulator_accumulate(
     if acc.is_null() || event.is_null() {
         return;
     }
-    let acc = &mut *acc;
-    let event = &*event;
-    acc.accumulate(event);
+    let acc_ref = &mut *acc;
+    let event_ref = &*event;
+    let _ = panic::catch_unwind(panic::AssertUnwindSafe(|| acc_ref.accumulate(event_ref)));
 }
 
 /// Returns a pointer to a heap-allocated u8 frame buffer and its length.
