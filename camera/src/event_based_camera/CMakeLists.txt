@@ -9,6 +9,7 @@ find_package(catkin REQUIRED COMPONENTS
   message_generation
 )
 
+find_package(OpenCV REQUIRED)
 find_library(CAER_LIBRARY NAMES caer)
 
 # --- Rust crate build ---
@@ -48,6 +49,7 @@ catkin_package(
 include_directories(
   include
   ${catkin_INCLUDE_DIRS}
+  ${OpenCV_INCLUDE_DIRS}
 )
 
 add_executable(edvs_camera
@@ -65,6 +67,7 @@ add_dependencies(edvs_camera
 target_link_libraries(edvs_camera PRIVATE
   ${catkin_LIBRARIES}
   ${CAER_LIBRARY}
+  ${OpenCV_LIBRARIES}
   ${RUST_LIB}
   pthread
   dl
