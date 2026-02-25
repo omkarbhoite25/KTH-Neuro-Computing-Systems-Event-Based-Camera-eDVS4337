@@ -413,6 +413,81 @@ Rejects isolated noise events using a **nearest-neighbor spatio-temporal correla
 
 This preserves real edges and motion while removing random background activity.
 
+<details>
+<summary><b>:bar_chart: Temporal Denoising Diagram & Example</b> (click to expand :point_down:)</summary>
+
+**How it works:** When an event arrives at pixel (x, y), the filter looks at the 8 surrounding neighbors. If any neighbor had an event within the last `threshold_us` microseconds, the event is valid. Otherwise it is noise.
+
+```
+  Sensor Grid (zoomed to 5x5 region)         3x3 Neighbor Check
+  ================================           ====================
+
+  Each cell shows the last event              For new event at (5,5)
+  timestamp (us) at that pixel.               at t = 102,000 us:
+
+       3     4     5     6     7                  +---+---+---+
+    +-----+-----+-----+-----+-----+              | 4 | 4 | 4 |
+  3 |  0  |  0  |  0  |  0  |  0  |              | 4 | 5 | 6 |  <-- neighbor
+    +-----+-----+-----+-----+-----+              +---+---+---+     columns
+  4 |  0  |100.0|100.5|  0  |  0  |              | 4 | 5 | 6 |
+    +-----+-----+-----+-----+-----+              +---+---+---+
+  5 |  0  |101.0| NEW |  0  |  0  |                3   4   5
+    +-----+-----+-----+-----+-----+                   ^
+  6 |  0  |  0  |  0  |  0  |  0  |              neighbor rows
+    +-----+-----+-----+-----+-----+
+  7 |  0  |  0  |  0  |  0  |  0  |
+    +-----+-----+-----+-----+-----+
+
+  Timestamps shown in milliseconds for readability (actual units: us)
+```
+
+**Example walkthrough** (`threshold_us = 5,000`):
+
+```
+  Step 1: Event arrives at (4,4) t=100,000 us
+          No neighbors have fired yet (all zeros).
+          Result: REJECTED (but timestamp recorded)
+
+          Grid at (4,4) updated: last_ts = 100,000
+
+  Step 2: Event arrives at (5,4) t=100,500 us
+          Neighbor (4,4) last fired at t=100,000
+          Delta: |100,500 - 100,000| = 500 us < 5,000 us threshold
+          Result: ACCEPTED (correlated with neighbor)
+
+  Step 3: Event arrives at (4,5) t=101,000 us
+          Neighbor (4,4) delta = 1,000 us < 5,000 us
+          Neighbor (5,4) delta =   500 us < 5,000 us
+          Result: ACCEPTED (two supporting neighbors)
+
+  Step 4: Event arrives at (10,10) t=200,000 us
+          All 8 neighbors have last_ts = 0 (never fired)
+          Result: REJECTED (isolated noise event)
+
+  Step 5: Event arrives at (5,4) t=300,000 us
+          Neighbor (4,4) delta = |300,000 - 100,000| = 200,000 us > 5,000 us
+          Neighbor (4,5) delta = |300,000 - 101,000| = 199,000 us > 5,000 us
+          Result: REJECTED (neighbors too old, temporal gap too large)
+```
+
+**Filter pipeline visualization:**
+
+```
+  Raw events from camera
+  =======================
+
+  (4,4)  t=100000 pol=+1   ──> Filter ──> REJECT  (no neighbors)
+  (5,4)  t=100500 pol=-1   ──> Filter ──> PASS    (neighbor at 4,4 within 5ms)
+  (4,5)  t=101000 pol=+1   ──> Filter ──> PASS    (neighbors at 4,4 and 5,4)
+  (10,10) t=200000 pol=+1  ──> Filter ──> REJECT  (isolated, no neighbors)
+  (5,4)  t=300000 pol=+1   ──> Filter ──> REJECT  (neighbors too old)
+                                   |
+                                   v
+                        Filtered output: 2/5 events passed (40%)
+```
+
+</details>
+
 ### :two: Hot Pixel Filter (`hot_pixel.rs`)
 
 Detects and suppresses **stuck or noisy pixels** that fire at abnormally high rates.
@@ -421,6 +496,97 @@ Detects and suppresses **stuck or noisy pixels** that fire at abnormally high ra
 - At the end of each window, any pixel whose count exceeds `max_rate` is flagged as **hot**.
 - Events from flagged pixels are rejected in the **following window**.
 - Flags are re-evaluated every window, so a pixel can recover if its rate drops.
+
+<details>
+<summary><b>:bar_chart: Hot Pixel Filter Diagram & Example</b> (click to expand :point_down:)</summary>
+
+**How it works:** The filter divides time into fixed-length windows. It counts events per pixel in each window. If a pixel exceeds `max_rate` events, it is flagged as "hot" and all its events are rejected in the next window.
+
+```
+  Time ────────────────────────────────────────────────────────────>
+
+  Window 1                          Window 2                     Window 3
+  [0 us ─────── 1,000,000 us]      [1,000,000 ─── 2,000,000]   [2,000,000 ── ...
+  |                            |    |                         |   |
+  |  Count events per pixel    |    |  Evaluate + reset       |   |
+  |  Pixel (3,7): 347 events   |    |  (3,7) > 100? YES: HOT |   |  Re-evaluate
+  |  Pixel (0,0):   5 events   |    |  (0,0) > 100? NO : OK  |   |  hot flags
+  |  Pixel (8,2): 102 events   |    |  (8,2) > 100? YES: HOT |   |
+  |                            |    |                         |   |
+
+  max_rate = 100 events/window
+```
+
+**Example walkthrough** (`window_us = 1,000,000`, `max_rate = 5`):
+
+```
+  WINDOW 1: t = 0 to 1,000,000 us
+  ================================
+  All pixels start unflagged. Events are counted.
+
+  Pixel (10,10) receives these events:
+    t=100,000  t=200,000  t=300,000  t=400,000
+    t=500,000  t=600,000  t=700,000  t=800,000
+    t=900,000  t=950,000
+    Total: 10 events
+
+  Pixel (20,20) receives these events:
+    t=150,000  t=750,000
+    Total: 2 events
+
+  All events PASS (no pixels are flagged yet in Window 1)
+
+
+  WINDOW BOUNDARY: t = 1,000,000 us
+  ===================================
+  Evaluate counts from Window 1:
+
+    Pixel (10,10): 10 events > max_rate(5) --> FLAGGED HOT
+    Pixel (20,20):  2 events < max_rate(5) --> OK
+    All other pixels: 0 events             --> OK
+
+  Reset all counters to zero.
+
+    +---+---+---+---+---+          +---+---+---+---+---+
+    |   |   |   |   |   |          |   |   |   |   |   |
+    +---+---+---+---+---+          +---+---+---+---+---+
+    |   | 10|   |   |   |   --->   |   |HOT|   |   |   |
+    +---+---+---+---+---+   eval   +---+---+---+---+---+
+    |   |   | 2 |   |   |          |   |   | ok|   |   |
+    +---+---+---+---+---+          +---+---+---+---+---+
+       counts (Window 1)              flags (Window 2)
+
+
+  WINDOW 2: t = 1,000,000 to 2,000,000 us
+  =========================================
+  Events from flagged pixels are REJECTED.
+
+  Event at (10,10) t=1,300,000  --> REJECTED (pixel is hot)
+  Event at (10,10) t=1,500,000  --> REJECTED (pixel is hot)
+  Event at (20,20) t=1,400,000  --> PASS     (pixel is not hot)
+  Event at (50,50) t=1,600,000  --> PASS     (pixel is not hot)
+
+
+  WINDOW BOUNDARY: t = 2,000,000 us
+  ===================================
+  Re-evaluate: If (10,10) had fewer events this window,
+  it gets unflagged and can pass events again.
+  HOT PIXELS CAN RECOVER.
+```
+
+**Typical hot pixel behavior on a real sensor:**
+
+```
+  128x128 sensor, 1-second window, max_rate = 1000
+
+  Normal pixel:     ~50 events/sec   (scene-driven)     --> PASS
+  Active edge:     ~500 events/sec   (moving object)    --> PASS
+  Hot pixel:     ~8,000 events/sec   (hardware defect)  --> FLAGGED
+
+  Result: 2-5 hot pixels suppressed out of 16,384 total pixels
+```
+
+</details>
 
 ### :three: Event Accumulator (`accumulator.rs`)
 
@@ -432,6 +598,171 @@ Converts a stream of polarity events into a **grayscale image frame**.
 - The frame can be reset to neutral at any time.
 
 This is useful for visualization, integration with traditional CV pipelines, and debugging.
+
+<details>
+<summary><b>:bar_chart: Event Accumulator Diagram & Example</b> (click to expand :point_down:)</summary>
+
+**How it works:** The accumulator maintains a grayscale frame where 128 is neutral gray. Each ON event (+1 polarity) makes that pixel slightly brighter. Each OFF event (-1 polarity) makes it slightly darker. The result is a reconstructed intensity image from the event stream.
+
+```
+  Polarity Event Stream                    Accumulated Frame
+  ========================                 ==================
+
+  ON event  (+1) --> pixel gets BRIGHTER   255 = white (max brightness)
+  OFF event (-1) --> pixel gets DARKER       0 = black (min brightness)
+  No events      --> pixel stays at 128    128 = neutral gray (starting value)
+
+  Brightness scale:
+
+  0         64        128        192       255
+  |---------|---------|---------|---------|
+  BLACK   DARK     NEUTRAL   BRIGHT    WHITE
+  (many   GRAY      GRAY     GRAY     (many
+  OFF)                                  ON)
+```
+
+**Example: 4x4 sensor accumulating 8 events**
+
+```
+  Initial frame (all pixels = 128, shown as "."):
+
+      0   1   2   3
+    +---+---+---+---+
+  0 | . | . | . | . |     . = 128 (neutral)
+    +---+---+---+---+
+  1 | . | . | . | . |
+    +---+---+---+---+
+  2 | . | . | . | . |
+    +---+---+---+---+
+  3 | . | . | . | . |
+    +---+---+---+---+
+
+
+  Event stream (in order):
+
+    #   x  y  polarity   pixel before --> after
+    1   1  0    +1       128 --> 129
+    2   2  0    +1       128 --> 129
+    3   1  1    +1       128 --> 129
+    4   2  1    -1       128 --> 127
+    5   1  0    +1       129 --> 130         (second ON event at same pixel)
+    6   0  2    -1       128 --> 127
+    7   0  2    -1       127 --> 126         (second OFF event at same pixel)
+    8   3  3    +1       128 --> 129
+
+
+  Resulting frame:
+
+      0    1    2    3
+    +----+----+----+----+
+  0 |128 |130 |129 |128 |     130 = two ON events (brighter)
+    +----+----+----+----+
+  1 |128 |129 |127 |128 |     127 = one OFF event (darker)
+    +----+----+----+----+
+  2 |126 |128 |128 |128 |     126 = two OFF events (even darker)
+    +----+----+----+----+
+  3 |128 |128 |128 |129 |
+    +----+----+----+----+
+
+  Visualized as brightness (. = neutral, + = bright, - = dark):
+
+      0   1   2   3
+    +---+---+---+---+
+  0 | . | + | + | . |
+    +---+---+---+---+
+  1 | . | + | - | . |
+    +---+---+---+---+
+  2 | - | . | . | . |
+    +---+---+---+---+
+  3 | . | . | . | + |
+    +---+---+---+---+
+```
+
+**Clamping behavior at the extremes:**
+
+```
+  Pixel starts at 128 (neutral)
+
+  After 127 consecutive ON events:   128 + 127 = 255 (WHITE, maximum)
+  After 1 more ON event:             255 + 1   = 255 (clamped, cannot exceed 255)
+  After 1 more ON event:             255 + 1   = 255 (still clamped)
+
+  Pixel starts at 128 (neutral)
+
+  After 128 consecutive OFF events:  128 - 128 = 0   (BLACK, minimum)
+  After 1 more OFF event:            0   - 1   = 0   (clamped, cannot go below 0)
+```
+
+**Real-world example: edge moving across sensor**
+
+```
+  A bright edge moves left-to-right across columns 2,3,4,5:
+
+  Time t1: edge at col 2          Time t2: edge at col 3
+  (ON events at col 2)            (ON at col 3, OFF at col 2)
+
+      0   1   2   3   4               0   1   2   3   4
+    +---+---+---+---+---+           +---+---+---+---+---+
+    | . | . | + | . | . |           | . | . | - | + | . |
+    +---+---+---+---+---+           +---+---+---+---+---+
+    | . | . | + | . | . |           | . | . | - | + | . |
+    +---+---+---+---+---+           +---+---+---+---+---+
+
+  Time t3: edge at col 4          Time t4: edge at col 5
+  (ON at col 4, OFF at col 3)     (ON at col 5, OFF at col 4)
+
+      0   1   2   3   4               0   1   2   3   4   5
+    +---+---+---+---+---+           +---+---+---+---+---+---+
+    | . | . | - | = | + |           | . | . | - | = | = | + |
+    +---+---+---+---+---+           +---+---+---+---+---+---+
+    | . | . | - | = | + |           | . | . | - | = | = | + |
+    +---+---+---+---+---+           +---+---+---+---+---+---+
+
+  . = 128 (neutral)   + = brighter   - = darker   = = returned toward neutral
+```
+
+</details>
+
+### :arrows_counterclockwise: Complete Filter Pipeline
+
+Events flow through the filters in sequence. Each filter can independently pass or reject an event.
+
+```
+  Raw Event ──> Temporal Denoise ──> Hot Pixel Filter ──> Accumulator ──> Frame
+  from camera   (reject noise)       (reject stuck px)   (build image)   output
+                     |                      |
+                     v                      v
+                 REJECTED               REJECTED
+              (isolated noise)       (defective pixel)
+```
+
+<details>
+<summary><b>:bar_chart: Full Pipeline Example</b> (click to expand :point_down:)</summary>
+
+```
+  10 raw events from camera sensor (128x128, threshold=5000us, max_rate=5):
+
+  #  x    y    timestamp    pol   Denoise         Hot Pixel       Accumulator
+  -- ---  ---  -----------  ---   --------------- --------------- ----------------
+  1  10   10   100,000      +1    REJECT (alone)  --              --
+  2  11   10   102,000      -1    PASS (near #1)  PASS            (11,10) = 127
+  3  10   11   103,000      +1    PASS (near #1)  PASS            (10,11) = 129
+  4  64   64   200,000      +1    REJECT (alone)  --              --
+  5  11   11   104,000      +1    PASS (near #3)  PASS            (11,11) = 129
+  6  50   50   500,000      +1    REJECT (alone)  --              --
+  7  10   10   105,000      -1    PASS (near #3)  PASS            (10,10) = 127
+  8  10   10   106,000      +1    PASS (near #7)  PASS            (10,10) = 128
+  9  10   10   107,000      -1    PASS (near #8)  PASS            (10,10) = 127
+  10 10   10   108,000      +1    PASS (near #9)  PASS            (10,10) = 128
+
+  Summary:
+    Input:     10 events
+    After denoise: 7 events (3 isolated noise events removed)
+    After hot pixel: 7 events (no hot pixels in this window)
+    Accumulator frame: mostly neutral with slight activity near (10,10)-(11,11)
+```
+
+</details>
 
 ### :test_tube: Running the Tests
 
