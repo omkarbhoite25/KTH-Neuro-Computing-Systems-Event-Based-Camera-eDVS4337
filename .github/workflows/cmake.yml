@@ -8,24 +8,33 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:20.04
+    env:
+      DEBIAN_FRONTEND: noninteractive
     steps:
+      - name: Install prerequisites
+        run: |
+          apt-get update
+          apt-get install -y curl gnupg2 lsb-release software-properties-common ca-certificates git build-essential cmake pkg-config
+
       - uses: actions/checkout@v4
 
       - name: Setup ROS Noetic repository
         run: |
-          sudo sh -c 'echo "deb http://packages.ros.org/ros/ubuntu $(lsb_release -sc) main" > /etc/apt/sources.list.d/ros-latest.list'
-          sudo apt-key adv --keyserver 'hkp://keyserver.ubuntu.com:80' --recv-key C1CF6E31E6BADE86
-          sudo apt-get update
+          sh -c 'echo "deb http://packages.ros.org/ros/ubuntu $(lsb_release -sc) main" > /etc/apt/sources.list.d/ros-latest.list'
+          apt-key adv --keyserver 'hkp://keyserver.ubuntu.com:80' --recv-key C1CF6E31E6BADE86
+          apt-get update
 
       - name: Install ROS Noetic
-        run: sudo apt-get install -y ros-noetic-ros-base ros-noetic-catkin
+        run: apt-get install -y ros-noetic-ros-base ros-noetic-catkin
 
       - name: Install system dependencies
         run: |
-          sudo add-apt-repository ppa:inivation-ppa/inivation -y
-          sudo apt-get update
-          sudo apt-get install -y libcaer-dev libusb-1.0-0-dev libserialport-dev
+          add-apt-repository ppa:inivation-ppa/inivation -y
+          apt-get update
+          apt-get install -y libcaer-dev libusb-1.0-0-dev libserialport-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
