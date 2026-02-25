@@ -1,8 +1,7 @@
 cmake_minimum_required(VERSION 3.0.2)
 project(event_based_camera)
 
-## Compile as C++11, supported in ROS Kinetic and newer
-add_compile_options(-std=c++11)
+add_compile_options(-std=c++14 -Wall -Wextra)
 
 find_package(catkin REQUIRED COMPONENTS
   roscpp
@@ -12,51 +11,74 @@ find_package(catkin REQUIRED COMPONENTS
 
 find_library(CAER_LIBRARY NAMES caer)
 
-# add_message_files(
-#   DIRECTORY
-#   FILES
-#     Control.msg
-# )
+# --- Rust crate build ---
+set(RUST_CRATE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/rust/edvs_processing)
+set(RUST_LIB ${RUST_CRATE_DIR}/target/release/libedvs_processing.a)
+
+add_custom_command(
+  OUTPUT ${RUST_LIB}
+  COMMAND cargo build --release
+  WORKING_DIRECTORY ${RUST_CRATE_DIR}
+  COMMENT "Building Rust edvs_processing crate"
+)
+add_custom_target(edvs_processing_rust ALL DEPENDS ${RUST_LIB})
+
+# --- ROS messages ---
 add_message_files(
   FILES
     Control.msg
+    Event.msg
+    EventArray.msg
 )
-
 
 generate_messages(
   DEPENDENCIES
     std_msgs
-    
 )
 
 catkin_package(
+  INCLUDE_DIRS include
   CATKIN_DEPENDS
     roscpp
     message_runtime
     std_msgs
 )
 
-###########
-## Build ##
-###########
-# add_library(
-#   cm
-#   src/new.cpp
-#   src/new.hpp
-# )
-## Specify additional locations of header files
-## Your package locations should be listed before other locations
+# --- Build ---
 include_directories(
   include
   ${catkin_INCLUDE_DIRS}
 )
 
-# # add_executable(event_based_camera src/event_based_camera.cpp)
-add_executable(event_based_camera src/event_based_camera.cpp)
-# target_link_libraries(event_based_camera ${catkin_LIBRARIES})
-target_link_libraries(event_based_camera PRIVATE ${catkin_LIBRARIES} ${CAER_LIBRARY})
+add_executable(edvs_camera
+  src/edvs_driver_node.cpp
+  src/edvs_driver.cpp
+  src/security.cpp
+)
 
-install(TARGETS event_based_camera
+add_dependencies(edvs_camera
+  ${${PROJECT_NAME}_EXPORTED_TARGETS}
+  ${catkin_EXPORTED_TARGETS}
+  edvs_processing_rust
+)
+
+target_link_libraries(edvs_camera PRIVATE
+  ${catkin_LIBRARIES}
+  ${CAER_LIBRARY}
+  ${RUST_LIB}
+  pthread
+  dl
+)
+
+# --- Install ---
+install(TARGETS edvs_camera
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
+install(DIRECTORY launch/
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/launch
+)
+
+install(DIRECTORY config/
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/config
+)
