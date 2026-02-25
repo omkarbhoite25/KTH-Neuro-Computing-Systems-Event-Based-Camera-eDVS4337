@@ -10,9 +10,9 @@
 [![ROS: Noetic](https://img.shields.io/badge/ROS-Noetic-blue.svg)](http://wiki.ros.org/noetic)
 [![Rust](https://img.shields.io/badge/Rust-2021_Edition-orange.svg)](https://www.rust-lang.org/)
 [![SLSA 3](https://slsa.dev/images/gh-badge-level3.svg)](https://slsa.dev)
-[![Tests](https://img.shields.io/badge/Tests-30%20passing-brightgreen.svg)](#test_tube-running-the-tests)
+[![Tests](https://img.shields.io/badge/Tests-234%20passing-brightgreen.svg)](#test_tube-running-the-tests)
 
-A modular, security-hardened ROS driver for the **eDVS4337 neuromorphic camera**, paired with a high-performance **Rust signal-processing library** for real-time event denoising and filtering.
+A modular, security-hardened ROS driver for the **eDVS4337 neuromorphic camera**, paired with a comprehensive **Rust neuromorphic processing library** — 22 filters spanning denoising, feature extraction, optical flow, corner detection, and learned representations.
 
 <img src="https://github.com/omkarbhoite25/KTH-Neuro-Computing-Systems-Event-Based-Camera-eDVS4337/blob/main/images/eDVS.png" width="720">
 
@@ -31,10 +31,10 @@ A modular, security-hardened ROS driver for the **eDVS4337 neuromorphic camera**
 
 | | Feature | Description |
 |:--|:--------|:------------|
-| :shield: | **Rust-Powered Filters** | Temporal denoising, hot pixel rejection, and frame accumulation — memory-safe by construction |
-| :shield: | **Security-Hardened** | 11 vulnerabilities fixed, mutex-guarded concurrency, monotonic rate limiting, `panic::catch_unwind()` at FFI boundaries |
+| :shield: | **22 Rust-Powered Filters** | Denoising, feature extraction, optical flow, corner detection, frequency analysis, voxel grids — memory-safe by construction |
+| :shield: | **Security-Hardened** | 11 vulnerabilities fixed, mutex-guarded concurrency, monotonic rate limiting, `panic::catch_unwind()` at every FFI boundary, `abs_diff` for safe timestamp arithmetic |
 | :gear: | **Modular Architecture** | Abstract `EvtCamera` interface, composable `FilterPipeline`, cleanly separated concerns |
-| :test_tube: | **30 Tests** | 17 unit tests + 13 integration tests covering FFI null safety, pipeline correctness, and edge cases |
+| :test_tube: | **234 Tests** | 153 unit tests + 81 integration tests covering FFI null safety, pipeline correctness, and edge cases |
 | :robot: | **CI/CD** | Automated build, CodeQL security analysis, and SLSA Level 3 provenance on every push |
 | :computer: | **Standalone CLI** | Offline event filtering with zero ROS dependency — runs anywhere Rust compiles |
 
@@ -186,18 +186,39 @@ camera/src/event_based_camera/
   +-- launch/
   |     edvs_camera.launch ...... Single-command launch file
   |
-  +-- rust/edvs_processing/ .... Rust crate (event filters + CLI)
+  +-- rust/edvs_processing/ .... Rust crate (22 event filters + CLI)
         Cargo.toml
         src/
-          lib.rs ................ Crate root (MAX_SENSOR_DIM constant)
-          event.rs .............. repr(C) Event type
-          denoise.rs ............ Temporal nearest-neighbor filter
-          hot_pixel.rs .......... Hot pixel detector
-          accumulator.rs ........ Event-to-frame accumulator
-          ffi.rs ................ C-compatible FFI exports (panic-safe)
-          bin/edvs_process.rs ... Standalone offline CLI tool
+          lib.rs ................. Crate root (MAX_SENSOR_DIM constant)
+          event.rs ............... repr(C) Event type
+          ffi.rs ................. C-compatible FFI exports (panic-safe)
+          bin/edvs_process.rs .... Standalone offline CLI tool
+          --- Core Filters ---
+          denoise.rs ............. Temporal nearest-neighbor denoising
+          hot_pixel.rs ........... Hot pixel detector
+          accumulator.rs ......... Event-to-frame accumulator
+          --- Phase 1: Quick-Win Filters ---
+          refractory.rs .......... Per-pixel refractory period
+          polarity.rs ............ Polarity-based event filter
+          roi.rs ................. Region-of-interest filter
+          decimation.rs .......... Systematic N-th event decimation
+          transform.rs ........... Spatial transforms (rotate, flip, transpose)
+          decay_accumulator.rs ... Exponential-decay frame accumulator
+          --- Phase 2: Medium-Effort Filters ---
+          time_surface.rs ........ Time surface (Lagorce et al., 2017)
+          slicer.rs .............. Event stream slicer (count/time)
+          anti_flicker.rs ........ Mains frequency rejection
+          stc.rs ................. Spatio-temporal contrast filter
+          rate_stats.rs .......... Sliding-window event rate tracker
+          mask.rs ................ Binary pixel mask
+          --- Phase 3: Advanced Algorithms ---
+          sits.rs ................ Speed-invariant time surface (Sironi et al., 2018)
+          voxel_grid.rs .......... 3D voxel grid (Zhu et al., 2019)
+          corner.rs .............. FA-Harris corner detector (Mueggler et al., 2017)
+          frequency.rs ........... Per-pixel frequency estimator
+          optical_flow.rs ........ Local optical flow (Benosman et al., 2014)
         tests/
-          integration_test.rs ... FFI safety and pipeline integration tests
+          integration_test.rs .... FFI safety and pipeline integration tests (81 tests)
 ```
 
 ### :link: Component Responsibilities
@@ -209,7 +230,7 @@ camera/src/event_based_camera/
 | **LibcaerEdvs** | C++ | libcaer-based eDVS implementation (serial open, config, packet parsing) |
 | **FilterPipeline** | C++ | RAII wrapper owning Rust FFI filter pointers; composable `process()` method |
 | **Security** | C++ | Device path validation, permission checks, monotonic rate limiting (`WallTime`) |
-| **edvs_processing** | Rust | Temporal denoise, hot pixel detection, frame accumulation (linked via FFI) |
+| **edvs_processing** | Rust | 22 neuromorphic filters: denoising, feature extraction, optical flow, corner detection, frequency analysis (linked via FFI) |
 | **edvs-process** | Rust | Standalone CLI for offline event filtering (zero ROS dependency) |
 | **ROS Messages** | .msg | `Control`, `Event`, `EventArray` definitions for topic communication |
 
@@ -460,7 +481,9 @@ rosrun event_based_camera edvs_camera \
 
 ## :microscope: Rust Processing Library
 
-The `edvs_processing` crate provides three memory-safe event processing filters, compiled as a static library and linked into the C++ driver via FFI through the `FilterPipeline` RAII wrapper. All FFI boundary functions use `panic::catch_unwind()` to prevent Rust panics from unwinding into C++. Each filter is independently unit-tested, and the full pipeline has integration tests covering FFI null safety and end-to-end event processing.
+The `edvs_processing` crate provides **22 memory-safe neuromorphic event processing filters**, compiled as a static library and linked into the C++ driver via FFI through the `FilterPipeline` RAII wrapper. All FFI boundary functions use `panic::catch_unwind()` to prevent Rust panics from unwinding into C++. Each filter is independently unit-tested (153 unit tests), and the full pipeline has integration tests (81 tests) covering FFI null safety and end-to-end event processing.
+
+The filters are organized in three phases by complexity:
 
 ### :one: Temporal Denoising (`denoise.rs`)
 
@@ -804,17 +827,59 @@ This is useful for visualization, integration with traditional CV pipelines, and
 
 </details>
 
+### :four: Phase 1 — Quick-Win Filters
+
+| Filter | File | Description |
+|:-------|:-----|:------------|
+| **Refractory Period** | `refractory.rs` | Enforces a minimum inter-event interval per pixel, suppressing burst noise |
+| **Polarity Filter** | `polarity.rs` | Passes only ON events, only OFF events, or both — configurable at runtime |
+| **ROI Filter** | `roi.rs` | Region-of-interest filter that passes events only within a configurable rectangle |
+| **Decimation** | `decimation.rs` | Passes every N-th event to reduce data rate (systematic subsampling) |
+| **Spatial Transforms** | `transform.rs` | Rotate (90/180/270), flip (horizontal/vertical), transpose event coordinates |
+| **Decay Accumulator** | `decay_accumulator.rs` | Exponential-decay frame accumulator — older events fade toward neutral, producing smoother reconstructions |
+
+### :five: Phase 2 — Medium-Effort Filters
+
+| Filter | File | Description |
+|:-------|:-----|:------------|
+| **Time Surface** | `time_surface.rs` | Per-pixel exponential decay surface (Lagorce et al., 2017) with local context extraction |
+| **Event Slicer** | `slicer.rs` | Partitions event streams into slices by count or time window |
+| **Anti-Flicker** | `anti_flicker.rs` | Rejects events at mains frequency (50/60 Hz) and harmonics using inter-event interval analysis |
+| **STC Filter** | `stc.rs` | Spatio-temporal contrast — passes events only if a same-polarity neighbor fired recently |
+| **Rate Statistics** | `rate_stats.rs` | Sliding-window event rate tracker with peak and last-rate queries |
+| **Pixel Mask** | `mask.rs` | Binary per-pixel mask — disable individual pixels or rectangular regions |
+
+### :six: Phase 3 — Advanced Algorithms
+
+| Filter | File | Description |
+|:-------|:-----|:------------|
+| **Speed-Invariant Time Surface** | `sits.rs` | Rank-normalized timestamps invariant to motion speed (Sironi et al., 2018) |
+| **Voxel Grid** | `voxel_grid.rs` | 3D (x, y, time_bins) representation with bilinear interpolation (Zhu et al., 2019) |
+| **Harris Corner Detector** | `corner.rs` | FA-Harris corner detection on the time surface (Mueggler et al., 2017) — windowed structure tensor over 3x3 Sobel gradients |
+| **Frequency Estimator** | `frequency.rs` | Per-pixel frequency estimation via median inter-event interval — useful for vibration analysis |
+| **Optical Flow** | `optical_flow.rs` | Local plane-fitting flow estimation (Benosman et al., 2014) — returns velocity in pixels/second |
+
 ### :arrows_counterclockwise: Complete Filter Pipeline
 
 Events flow through the `FilterPipeline` in sequence. Each filter can independently pass or reject an event. The pipeline is managed by RAII — filters are created on `init()` and destroyed automatically when the pipeline goes out of scope.
 
 ```
-  Raw Event ──> Temporal Denoise ──> Hot Pixel Filter ──> Accumulator ──> Frame
-  from camera   (reject noise)       (reject stuck px)   (build image)   output
-                     |                      |
-                     v                      v
-                 REJECTED               REJECTED
-              (isolated noise)       (defective pixel)
+  Raw Event ──> Refractory ──> Polarity ──> ROI ──> Denoise ──> Hot Pixel ──> STC
+  from camera   (burst noise)  (ON/OFF)    (crop)  (isolated)  (stuck px)  (contrast)
+                                                                    |
+        ┌───────────────────────────────────────────────────────────┘
+        v
+  Anti-Flicker ──> Decimation ──> Mask ──> Accumulator / Decay Accumulator ──> Frame
+  (mains freq)     (subsample)    (mask)   (build image)                       output
+                                              |
+        ┌─────────────────────────────────────┘
+        v
+  Time Surface ──> SITS ──> Corner Detector ──> Optical Flow ──> Feature Output
+  (per-pixel ts)   (rank)   (Harris response)   (velocity)
+        |
+        v
+  Voxel Grid ──> Frequency Estimator ──> Rate Stats ──> Slicer ──> Analysis
+  (3D tensor)    (Hz per pixel)          (event rate)   (batches)
 ```
 
 <details>
@@ -860,46 +925,51 @@ cargo test
 ```
 
 ```
-running 17 tests  (unit tests)
+running 153 tests  (unit tests across 22 modules)
 test accumulator::tests::test_clamp_lower ... ok
 test accumulator::tests::test_clamp_upper ... ok
-test accumulator::tests::test_initial_frame_neutral ... ok
-test accumulator::tests::test_off_event_decrements ... ok
-test accumulator::tests::test_on_event_increments ... ok
-test accumulator::tests::test_out_of_bounds_ignored ... ok
-test accumulator::tests::test_reset ... ok
-test denoise::tests::test_corner_event ... ok
-test denoise::tests::test_distant_neighbor_rejected ... ok
 test denoise::tests::test_isolated_event_rejected ... ok
 test denoise::tests::test_neighbor_event_accepted ... ok
-test denoise::tests::test_out_of_bounds_rejected ... ok
-test event::tests::test_event_display ... ok
-test event::tests::test_event_size ... ok
-test hot_pixel::tests::test_hot_pixel_count ... ok
 test hot_pixel::tests::test_hot_pixel_detected ... ok
-test hot_pixel::tests::test_normal_pixel_passes ... ok
+test refractory::tests::test_first_event_passes ... ok
+test polarity::tests::test_on_only_passes_on ... ok
+test roi::tests::test_inside_roi_passes ... ok
+test decimation::tests::test_factor_2_passes_half ... ok
+test transform::tests::test_rotate_90 ... ok
+test decay_accumulator::tests::test_decay_toward_neutral ... ok
+test time_surface::tests::test_local_context_center ... ok
+test slicer::tests::test_by_count_triggers_at_threshold ... ok
+test anti_flicker::tests::test_periodic_at_flicker_freq_rejected ... ok
+test stc::tests::test_same_polarity_neighbor_passes ... ok
+test rate_stats::tests::test_rate_computed_at_window ... ok
+test mask::tests::test_disable_rect ... ok
+test sits::tests::test_rank_ordering ... ok
+test voxel_grid::tests::test_interpolation_between_bins ... ok
+test corner::tests::test_corner_produces_high_response ... ok
+test frequency::tests::test_periodic_100hz ... ok
+test optical_flow::tests::test_horizontal_motion ... ok
+... (153 tests total)
 
-test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+test result: ok. 153 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 
-running 13 tests  (integration tests)
-test test_ffi_accumulator_null_acc ... ok
-test test_ffi_accumulator_round_trip ... ok
-test test_ffi_create_invalid_params_returns_null ... ok
-test test_ffi_hot_pixel_destroy_null ... ok
-test test_ffi_hot_pixel_null_filter ... ok
-test test_ffi_temporal_destroy_null ... ok
-test test_ffi_temporal_null_event ... ok
-test test_ffi_temporal_null_filter ... ok
+running 81 tests  (integration tests)
 test test_full_pipeline_normal_events ... ok
-test test_pipeline_accumulator_clamp_after_many_events ... ok
-test test_pipeline_accumulator_frame_after_mixed_events ... ok
-test test_pipeline_hot_pixel_rejected_after_window ... ok
-test test_pipeline_noise_rejected ... ok
+test test_ffi_accumulator_round_trip ... ok
+test test_ffi_corner_detector_round_trip ... ok
+test test_ffi_sits_round_trip ... ok
+test test_ffi_voxel_grid_round_trip ... ok
+test test_ffi_optical_flow_round_trip ... ok
+test test_ffi_frequency_estimator_round_trip ... ok
+test test_pipeline_sits_rank_ordering ... ok
+test test_pipeline_corner_with_denoise ... ok
+test test_pipeline_optical_flow_horizontal_motion ... ok
+test test_phase3_full_pipeline ... ok
+... (81 tests total)
 
-test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+test result: ok. 81 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 ```
 
-**30 total tests** covering: boundary pixels, temporal threshold edge cases, saturation clamping, out-of-bounds rejection, hot pixel recovery, FFI null safety, invalid parameter handling, and full pipeline integration.
+**234 total tests** covering: all 22 filter modules with boundary cases, temporal threshold edge cases, saturation clamping, out-of-bounds rejection, hot pixel recovery, FFI null safety for every filter type, invalid parameter handling, round-trip FFI create/process/destroy cycles, and full multi-phase pipeline integration.
 
 ---
 
@@ -1058,7 +1128,7 @@ Three GitHub Actions workflows run automatically on every push and pull request.
 
 | Workflow | Trigger | Purpose |
 |:---------|:--------|:--------|
-| **CMake Build & Test** | Push, PR | Builds the Rust crate (`cargo build`, `cargo test` with 30 tests), then builds the full ROS package (`catkin_make`) on Ubuntu 20.04 |
+| **CMake Build & Test** | Push, PR | Builds the Rust crate (`cargo build`, `cargo test` with 234 tests), then builds the full ROS package (`catkin_make`) on Ubuntu 20.04 |
 | **CodeQL Security Analysis** | Push, PR, weekly | Static analysis of all C++ code for buffer overflows, format string bugs, null dereferences, and injection vulnerabilities |
 | **SLSA Provenance** | Release created | Generates SLSA Level 3 supply-chain attestations with SHA256 hashes of build artifacts |
 
