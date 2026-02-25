@@ -2,7 +2,7 @@
 
 # :zap: eDVS4337 Event-Based Camera
 
-### Secure ROS Driver & Rust Processing Pipeline
+### Production-Grade ROS Driver & Rust Processing Pipeline
 
 [![CMake Build & Test](https://github.com/omkarbhoite25/KTH-Neuro-Computing-Systems-Event-Based-Camera-eDVS4337/actions/workflows/cmake.yml/badge.svg)](https://github.com/omkarbhoite25/KTH-Neuro-Computing-Systems-Event-Based-Camera-eDVS4337/actions/workflows/cmake.yml)
 [![CodeQL](https://github.com/omkarbhoite25/KTH-Neuro-Computing-Systems-Event-Based-Camera-eDVS4337/actions/workflows/codeql.yml/badge.svg)](https://github.com/omkarbhoite25/KTH-Neuro-Computing-Systems-Event-Based-Camera-eDVS4337/actions/workflows/codeql.yml)
@@ -10,6 +10,7 @@
 [![ROS: Noetic](https://img.shields.io/badge/ROS-Noetic-blue.svg)](http://wiki.ros.org/noetic)
 [![Rust](https://img.shields.io/badge/Rust-2021_Edition-orange.svg)](https://www.rust-lang.org/)
 [![SLSA 3](https://slsa.dev/images/gh-badge-level3.svg)](https://slsa.dev)
+[![Tests](https://img.shields.io/badge/Tests-30%20passing-brightgreen.svg)](#test_tube-running-the-tests)
 
 A modular, security-hardened ROS driver for the **eDVS4337 neuromorphic camera**, paired with a high-performance **Rust signal-processing library** for real-time event denoising and filtering.
 
@@ -23,6 +24,41 @@ A modular, security-hardened ROS driver for the **eDVS4337 neuromorphic camera**
 
 **Project by:** Omkar Vilas Bhoite
 **Advised by:** Prof. Jorg Conradt & Juan Pablo Romero Bermudez, KTH Royal Institute of Technology
+
+---
+
+## :sparkles: Key Features
+
+| | Feature | Description |
+|:--|:--------|:------------|
+| :crab: | **Rust-Powered Filters** | Temporal denoising, hot pixel rejection, and frame accumulation — memory-safe by construction |
+| :shield: | **Security-Hardened** | 11 vulnerabilities fixed, mutex-guarded concurrency, monotonic rate limiting, `panic::catch_unwind()` at FFI boundaries |
+| :gear: | **Modular Architecture** | Abstract `EvtCamera` interface, composable `FilterPipeline`, cleanly separated concerns |
+| :test_tube: | **30 Tests** | 17 unit tests + 13 integration tests covering FFI null safety, pipeline correctness, and edge cases |
+| :robot: | **CI/CD** | Automated build, CodeQL security analysis, and SLSA Level 3 provenance on every push |
+| :computer: | **Standalone CLI** | Offline event filtering with zero ROS dependency — runs anywhere Rust compiles |
+
+---
+
+## :fast_forward: Quick Start
+
+```bash
+# 1. Build Rust processing library
+cd camera/src/event_based_camera/rust/edvs_processing
+cargo build --release
+
+# 2. Build ROS package
+cd ../../../../../camera
+catkin_make && source devel/setup.bash
+
+# 3. Launch (3 terminals)
+roscore                                                              # Terminal 1
+roslaunch event_based_camera edvs_camera.launch                      # Terminal 2
+rostopic pub -1 /edvs/control event_based_camera/Control "sos: 1"    # Terminal 3
+
+# 4. View live events
+rostopic echo /edvs/events
+```
 
 ---
 
@@ -74,7 +110,7 @@ This makes event cameras ideal for **high-speed robotics**, **low-latency tracki
 
 ## :building_construction: Architecture
 
-The project is a **C++ and Rust hybrid** with two tightly integrated components:
+The project is a **C++ and Rust hybrid** with a layered, modular architecture. Each layer has a single responsibility and communicates through well-defined interfaces.
 
 ```
                     +-----------------+
@@ -93,11 +129,17 @@ The project is a **C++ and Rust hybrid** with two tightly integrated components:
     +---------------------------------------------------+
     |              EdvsDriver (C++ ROS Node)             |
     |                                                   |
-    |  +-------------+    +---------------------------+ |
-    |  | libcaer     |    | Rust FFI Filters          | |
-    |  | Serial I/O  |--->| TemporalFilter            | |
-    |  | /dev/ttyUSB0|    | HotPixelFilter            | |
-    |  +-------------+    +---------------------------+ |
+    |  +---------------------+   +--------------------+ |
+    |  | EvtCamera interface |   | FilterPipeline     | |
+    |  |   (abstraction)     |   |  (RAII C++ class)  | |
+    |  |         |           |   |         |          | |
+    |  |  +------v--------+  |   |  +------v-------+  | |
+    |  |  | LibcaerEdvs   |  |   |  | Rust FFI     |  | |
+    |  |  | (serial I/O)  |  |-->|  | Temporal     |  | |
+    |  |  +---------------+  |   |  | HotPixel     |  | |
+    |  +---------------------+   |  +--------------+  | |
+    |                            +--------------------+ |
+    |  mutex-guarded device access | atomic stop flag   |
     +---------------------------------------------------+
               |
     +---------v----------+
@@ -106,6 +148,13 @@ The project is a **C++ and Rust hybrid** with two tightly integrated components:
     +--------------------+
 ```
 
+### :jigsaw: Design Principles
+
+- **Abstraction**: The `EvtCamera` interface decouples the driver from any specific camera SDK — swap libcaer for Metavision or a mock without touching driver logic
+- **Composition**: `FilterPipeline` owns Rust filter lifecycles via RAII `RustFilterPtr<T>` wrappers — no manual `destroy()` calls
+- **Thread safety**: `device_mutex_` guards all shared state; `std::atomic<bool>` enables lock-free stop signaling
+- **FFI safety**: `panic::catch_unwind()` at every Rust FFI boundary; null checks on all pointer parameters
+
 ### :file_folder: Project Structure
 
 ```
@@ -113,12 +162,17 @@ camera/src/event_based_camera/
   |
   +-- include/event_based_camera/
   |     edvs_driver.hpp ......... Driver class (RAII, threaded readout)
+  |     evt_camera.hpp .......... Abstract camera interface (EvtCamera)
+  |     libcaer_edvs.hpp ........ libcaer eDVS implementation
+  |     filter_pipeline.hpp ..... FilterPipeline class (Rust FFI RAII wrappers)
   |     event_types.hpp ......... Shared event struct (C/Rust FFI layout)
   |     security.hpp ............ Input validation and rate limiting
   |
   +-- src/
   |     edvs_driver_node.cpp .... Thin ROS entry point (main)
   |     edvs_driver.cpp ......... Driver implementation
+  |     filter_pipeline.cpp ..... FilterPipeline init/process/reset
+  |     libcaer_edvs.cpp ........ libcaer device open/start/stop/read
   |     security.cpp ............ Security utilities
   |
   +-- msg/
@@ -135,24 +189,29 @@ camera/src/event_based_camera/
   +-- rust/edvs_processing/ .... Rust crate (event filters + CLI)
         Cargo.toml
         src/
-          lib.rs ................ Crate root
+          lib.rs ................ Crate root (MAX_SENSOR_DIM constant)
           event.rs .............. repr(C) Event type
           denoise.rs ............ Temporal nearest-neighbor filter
           hot_pixel.rs .......... Hot pixel detector
           accumulator.rs ........ Event-to-frame accumulator
-          ffi.rs ................ C-compatible FFI exports
+          ffi.rs ................ C-compatible FFI exports (panic-safe)
           bin/edvs_process.rs ... Standalone offline CLI tool
+        tests/
+          integration_test.rs ... FFI safety and pipeline integration tests
 ```
 
-### :link: How the Pieces Connect
+### :link: Component Responsibilities
 
-| Layer | Language | Role |
-|:------|:---------|:-----|
-| **Driver node** | C++ | Opens the eDVS via libcaer, reads raw events over serial, publishes to ROS |
-| **Security module** | C++ | Validates device paths, rate-limits commands, checks permissions |
-| **Processing filters** | Rust | Denoises events, detects hot pixels, accumulates frames (linked via FFI) |
-| **CLI tool** | Rust | Offline filtering of recorded event files (zero ROS dependency) |
-| **ROS messages** | .msg | `Control`, `Event`, `EventArray` definitions for topic communication |
+| Component | Language | Responsibility |
+|:----------|:---------|:---------------|
+| **EdvsDriver** | C++ | Orchestrates camera lifecycle, ROS pub/sub, threaded readout loop |
+| **EvtCamera** | C++ | Pure virtual interface — enables SDK-agnostic device access and testing |
+| **LibcaerEdvs** | C++ | libcaer-based eDVS implementation (serial open, config, packet parsing) |
+| **FilterPipeline** | C++ | RAII wrapper owning Rust FFI filter pointers; composable `process()` method |
+| **Security** | C++ | Device path validation, permission checks, monotonic rate limiting (`WallTime`) |
+| **edvs_processing** | Rust | Temporal denoise, hot pixel detection, frame accumulation (linked via FFI) |
+| **edvs-process** | Rust | Standalone CLI for offline event filtering (zero ROS dependency) |
+| **ROS Messages** | .msg | `Control`, `Event`, `EventArray` definitions for topic communication |
 
 ---
 
@@ -311,7 +370,7 @@ rostopic pub -1 /edvs/control event_based_camera/Control "sos: 1"
 rostopic pub -1 /edvs/control event_based_camera/Control "sos: 0"
 ```
 
-**Option 2:** Press `Ctrl+C` in the node terminal. The driver shuts down gracefully: it stops the data stream, joins the readout thread, and releases the serial port via RAII.
+**Option 2:** Press `Ctrl+C` in the node terminal. The driver shuts down gracefully: it atomically sets the stop flag, joins the readout thread, calls `stopStream()` (noexcept), and releases all resources via RAII.
 
 ---
 
@@ -401,7 +460,7 @@ rosrun event_based_camera edvs_camera \
 
 ## :crab: Rust Processing Library
 
-The `edvs_processing` crate provides three memory-safe event processing filters, compiled as a static library and linked into the C++ driver via FFI. Each filter is independently unit-tested.
+The `edvs_processing` crate provides three memory-safe event processing filters, compiled as a static library and linked into the C++ driver via FFI through the `FilterPipeline` RAII wrapper. All FFI boundary functions use `panic::catch_unwind()` to prevent Rust panics from unwinding into C++. Each filter is independently unit-tested, and the full pipeline has integration tests covering FFI null safety and end-to-end event processing.
 
 ### :one: Temporal Denoising (`denoise.rs`)
 
@@ -747,7 +806,7 @@ This is useful for visualization, integration with traditional CV pipelines, and
 
 ### :arrows_counterclockwise: Complete Filter Pipeline
 
-Events flow through the filters in sequence. Each filter can independently pass or reject an event.
+Events flow through the `FilterPipeline` in sequence. Each filter can independently pass or reject an event. The pipeline is managed by RAII — filters are created on `init()` and destroyed automatically when the pipeline goes out of scope.
 
 ```
   Raw Event ──> Temporal Denoise ──> Hot Pixel Filter ──> Accumulator ──> Frame
@@ -801,7 +860,7 @@ cargo test
 ```
 
 ```
-running 17 tests
+running 17 tests  (unit tests)
 test accumulator::tests::test_clamp_lower ... ok
 test accumulator::tests::test_clamp_upper ... ok
 test accumulator::tests::test_initial_frame_neutral ... ok
@@ -821,9 +880,26 @@ test hot_pixel::tests::test_hot_pixel_detected ... ok
 test hot_pixel::tests::test_normal_pixel_passes ... ok
 
 test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+
+running 13 tests  (integration tests)
+test test_ffi_accumulator_null_acc ... ok
+test test_ffi_accumulator_round_trip ... ok
+test test_ffi_create_invalid_params_returns_null ... ok
+test test_ffi_hot_pixel_destroy_null ... ok
+test test_ffi_hot_pixel_null_filter ... ok
+test test_ffi_temporal_destroy_null ... ok
+test test_ffi_temporal_null_event ... ok
+test test_ffi_temporal_null_filter ... ok
+test test_full_pipeline_normal_events ... ok
+test test_pipeline_accumulator_clamp_after_many_events ... ok
+test test_pipeline_accumulator_frame_after_mixed_events ... ok
+test test_pipeline_hot_pixel_rejected_after_window ... ok
+test test_pipeline_noise_rejected ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 ```
 
-Tests cover boundary pixels, temporal threshold edge cases, saturation clamping, out-of-bounds rejection, and hot pixel recovery.
+**30 total tests** covering: boundary pixels, temporal threshold edge cases, saturation clamping, out-of-bounds rejection, hot pixel recovery, FFI null safety, invalid parameter handling, and full pipeline integration.
 
 ---
 
@@ -839,7 +915,7 @@ One event per line, tab-separated:
 x	y	timestamp	polarity
 ```
 
-Lines starting with `#` are treated as comments and skipped.
+Lines starting with `#` are treated as comments and skipped. Only valid polarities (-1 and +1) are accepted.
 
 ### Examples
 
@@ -940,21 +1016,25 @@ event_based_camera/Event[]   events     # Batch of filtered events
 
 ## :shield: Security
 
-The driver implements multiple layers of hardening to address vulnerabilities found in the original prototype.
+The driver implements multiple layers of defense-in-depth hardening, addressing both the original prototype's vulnerabilities and new threats identified during security review.
+
+### Security Measures
 
 | Category | Measure | Details |
 |:---------|:--------|:--------|
 | :mag: **Input validation** | Device path validation | Path must exist under `/dev/`, must be a character device (`S_ISCHR`), must not contain `..` traversal sequences |
 | :mag: **Input validation** | Control message validation | Only `sos: 0` and `sos: 1` are accepted; all other values are rejected with a warning |
+| :mag: **Input validation** | Parameter validation | Filter parameters validated before `int` to `uint32_t`/`int64_t` cast; negative values rejected at startup |
+| :mag: **Input validation** | Event bounds check | Out-of-bounds events (x >= width or y >= height) are logged and skipped; only valid polarities (-1, +1) accepted |
 | :lock: **Access control** | Permission check | Read/write access to the serial device is verified before opening; clear error messages guide the user to fix permissions |
-| :hourglass_flowing_sand: **Rate limiting** | Command throttling | Control commands are throttled to one per second, preventing accidental or malicious flooding |
-| :broom: **Resource safety** | RAII lifecycle | Camera device wrapped in `std::unique_ptr`; destructor calls `dataStop()` and closes the serial port automatically |
-| :thread: **Concurrency** | Threaded readout | Event reading runs in a dedicated thread; the ROS callback queue is never blocked |
-| :no_entry_sign: **Memory safety** | Rust processing | All event filtering logic is written in Rust, eliminating buffer overflows, use-after-free, and data races by construction |
+| :hourglass_flowing_sand: **Rate limiting** | Monotonic throttling | Uses `ros::WallTime` (immune to simulated time manipulation) to throttle control commands to one per second |
+| :broom: **Resource safety** | RAII lifecycle | Camera device wrapped in `unique_ptr<EvtCamera>`; Rust FFI pointers wrapped in `RustFilterPtr<T>` RAII template; `stopStream()` is `noexcept` |
+| :thread: **Concurrency** | Mutex-guarded device | `device_mutex_` protects all device access in `readoutLoop()`; `std::atomic<bool>` flag for clean stop; width/height cached locally under lock |
+| :no_entry_sign: **Memory safety** | Rust processing | All event filtering in Rust; `panic::catch_unwind()` at FFI boundaries returns null on panic; `checked_mul` prevents dimension overflow; `MAX_SENSOR_DIM` bounds |
 | :robot: **Static analysis** | CodeQL CI | Automated C++ vulnerability scanning on every push and on a weekly schedule |
 | :package: **Supply chain** | SLSA Level 3 | Release builds include cryptographic provenance attestations |
 
-### Vulnerabilities Fixed from Original Codebase
+### Vulnerability Remediation Log
 
 | ID | Issue | Severity | Resolution |
 |:---|:------|:---------|:-----------|
@@ -964,6 +1044,11 @@ The driver implements multiple layers of hardening to address vulnerabilities fo
 | S9 | `int64_t` timestamp truncated to `int` | MEDIUM | `int64_t` used throughout the pipeline |
 | S10 | Infinite loop in ROS callback (DoS) | HIGH | Threaded readout with `std::atomic<bool>` |
 | S13 | Serial port left open on shutdown | MEDIUM | RAII destructor handles cleanup |
+| S14 | Use-after-free race in `readoutLoop` device access | CRITICAL | Mutex-guarded device read; cached width/height locally |
+| S15 | Integer overflow in `width * height` allocation | HIGH | `checked_mul` + `MAX_SENSOR_DIM` bounds in Rust constructors |
+| S16 | Negative int cast to uint32_t for filter params | HIGH | C++ validates parameters > 0 before casting |
+| S17 | Clock skew bypass via simulated time rate-limit | MEDIUM | Switched to monotonic `ros::WallTime` |
+| S18 | `stopStream()` could throw during cleanup | MEDIUM | Declared `noexcept`; body wrapped in try-catch |
 
 ---
 
@@ -973,7 +1058,7 @@ Three GitHub Actions workflows run automatically on every push and pull request.
 
 | Workflow | Trigger | Purpose |
 |:---------|:--------|:--------|
-| **CMake Build & Test** | Push, PR | Builds the Rust crate (`cargo build`, `cargo test`), then builds the full ROS package (`catkin_make`) on Ubuntu 20.04 |
+| **CMake Build & Test** | Push, PR | Builds the Rust crate (`cargo build`, `cargo test` with 30 tests), then builds the full ROS package (`catkin_make`) on Ubuntu 20.04 |
 | **CodeQL Security Analysis** | Push, PR, weekly | Static analysis of all C++ code for buffer overflows, format string bugs, null dereferences, and injection vulnerabilities |
 | **SLSA Provenance** | Release created | Generates SLSA Level 3 supply-chain attestations with SHA256 hashes of build artifacts |
 
