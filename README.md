@@ -31,7 +31,7 @@ A modular, security-hardened ROS driver for the **eDVS4337 neuromorphic camera**
 
 | | Feature | Description |
 |:--|:--------|:------------|
-| :crab: | **Rust-Powered Filters** | Temporal denoising, hot pixel rejection, and frame accumulation — memory-safe by construction |
+| :shield: | **Rust-Powered Filters** | Temporal denoising, hot pixel rejection, and frame accumulation — memory-safe by construction |
 | :shield: | **Security-Hardened** | 11 vulnerabilities fixed, mutex-guarded concurrency, monotonic rate limiting, `panic::catch_unwind()` at FFI boundaries |
 | :gear: | **Modular Architecture** | Abstract `EvtCamera` interface, composable `FilterPipeline`, cleanly separated concerns |
 | :test_tube: | **30 Tests** | 17 unit tests + 13 integration tests covering FFI null safety, pipeline correctness, and edge cases |
@@ -71,7 +71,7 @@ rostopic echo /edvs/events
 - [:rocket: Running](#rocket-running)
 - [:mag: Viewing Events](#mag-viewing-events)
 - [:gear: Configuration](#gear-configuration)
-- [:crab: Rust Processing Library](#crab-rust-processing-library)
+- [:microscope: Rust Processing Library](#microscope-rust-processing-library)
 - [:computer: Standalone CLI Tool](#computer-standalone-cli-tool)
 - [:satellite: ROS Interface](#satellite-ros-interface)
 - [:shield: Security](#shield-security)
@@ -458,7 +458,7 @@ rosrun event_based_camera edvs_camera \
 
 ---
 
-## :crab: Rust Processing Library
+## :microscope: Rust Processing Library
 
 The `edvs_processing` crate provides three memory-safe event processing filters, compiled as a static library and linked into the C++ driver via FFI through the `FilterPipeline` RAII wrapper. All FFI boundary functions use `panic::catch_unwind()` to prevent Rust panics from unwinding into C++. Each filter is independently unit-tested, and the full pipeline has integration tests covering FFI null safety and end-to-end event processing.
 
