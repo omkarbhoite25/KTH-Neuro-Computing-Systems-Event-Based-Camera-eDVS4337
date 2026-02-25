@@ -12,6 +12,3 @@ crate-type = ["staticlib", "cdylib", "lib"]
 [[bin]]
 name = "edvs-process"
 path = "src/bin/edvs_process.rs"
-
-[profile.release]
-panic = "abort"
