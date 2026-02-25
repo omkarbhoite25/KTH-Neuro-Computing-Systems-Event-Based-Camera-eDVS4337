@@ -1,0 +1,51 @@
+name: CodeQL Security Analysis
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 6 * * 1'
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        language: [cpp]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+
+      - name: Setup ROS
+        uses: ros-tooling/setup-ros@v0.7
+        with:
+          required-ros-distributions: noetic
+
+      - name: Install system dependencies
+        run: |
+          sudo add-apt-repository ppa:inivation-ppa/inivation -y
+          sudo apt-get update
+          sudo apt-get install -y libcaer-dev libusb-1.0-0-dev libserialport-dev
+
+      - name: Build for CodeQL analysis
+        shell: bash
+        run: |
+          source /opt/ros/noetic/setup.bash
+          cd camera
+          catkin_make
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
