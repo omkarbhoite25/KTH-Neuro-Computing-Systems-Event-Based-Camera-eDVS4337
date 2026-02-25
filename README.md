@@ -198,7 +198,7 @@ sudo apt-get install libcaer-dev
 The eDVS communicates over a serial port (typically `/dev/ttyUSB0` or `/dev/ttyACM0`). Your user account must have permission to access it.
 
 <details>
-<summary><b>:key: Click to expand serial port setup instructions</b></summary>
+<summary><b>:key: Serial Port Setup Instructions</b> (click to expand :point_down:)</summary>
 
 **Step 1.** Check which port the camera is connected to:
 
@@ -338,7 +338,7 @@ rostopic echo -n 1 /edvs/events
 ```
 
 <details>
-<summary><b>:page_facing_up: Example output</b></summary>
+<summary><b>:page_facing_up: Example EventArray Output</b> (click to expand :point_down:)</summary>
 
 ```yaml
 header:
@@ -544,7 +544,7 @@ edvs-process: 84210/100000 events passed filters (84.2%)
 ### Message Definitions
 
 <details>
-<summary><b>Control.msg</b></summary>
+<summary><b>:page_facing_up: Control.msg</b> (click to expand :point_down:)</summary>
 
 ```
 int32 sos    # 1 = start capture, 0 = stop capture
@@ -553,7 +553,7 @@ int32 sos    # 1 = start capture, 0 = stop capture
 </details>
 
 <details>
-<summary><b>Event.msg</b></summary>
+<summary><b>:page_facing_up: Event.msg</b> (click to expand :point_down:)</summary>
 
 ```
 uint16 x          # Pixel column (0 to width-1)
@@ -565,7 +565,7 @@ int8   polarity   # +1 (ON / brighter) or -1 (OFF / darker)
 </details>
 
 <details>
-<summary><b>EventArray.msg</b></summary>
+<summary><b>:page_facing_up: EventArray.msg</b> (click to expand :point_down:)</summary>
 
 ```
 std_msgs/Header              header
@@ -624,7 +624,7 @@ All CI jobs run on `ubuntu-20.04` with ROS Noetic, matching the production deplo
 ## :wrench: Troubleshooting
 
 <details>
-<summary><b>:x: "Serial port validation failed"</b></summary>
+<summary><b>:x: "Serial port validation failed"</b> (click to expand :point_down:)</summary>
 
 The device path is incorrect or the device is not connected.
 
@@ -637,7 +637,7 @@ The device path is incorrect or the device is not connected.
 </details>
 
 <details>
-<summary><b>:x: "Serial port permission check failed"</b></summary>
+<summary><b>:x: "Serial port permission check failed"</b> (click to expand :point_down:)</summary>
 
 Your user account does not have read/write access to the serial device.
 
@@ -648,7 +648,7 @@ Your user account does not have read/write access to the serial device.
 </details>
 
 <details>
-<summary><b>:x: "Command not found" when running rosrun or roslaunch</b></summary>
+<summary><b>:x: "Command not found" when running rosrun or roslaunch</b> (click to expand :point_down:)</summary>
 
 The ROS workspace has not been sourced in this terminal.
 
@@ -661,7 +661,7 @@ Add it to `~/.bashrc` to make it permanent.
 </details>
 
 <details>
-<summary><b>:warning: Events are published but most are filtered out</b></summary>
+<summary><b>:warning: Events are published but most are filtered out</b> (click to expand :point_down:)</summary>
 
 The denoising threshold may be too strict for your scene. Try one of the following:
 
@@ -672,7 +672,7 @@ The denoising threshold may be too strict for your scene. Try one of the followi
 </details>
 
 <details>
-<summary><b>:warning: Camera does not respond after sending sos: 1</b></summary>
+<summary><b>:warning: Camera does not respond after sending sos: 1</b> (click to expand :point_down:)</summary>
 
 The driver rate-limits control commands to one per second. Wait at least one second between commands.
 
@@ -681,7 +681,7 @@ If the camera still does not respond, check that the device is plugged in and th
 </details>
 
 <details>
-<summary><b>:warning: catkin_make fails with "Could not find library: caer"</b></summary>
+<summary><b>:warning: catkin_make fails with "Could not find library: caer"</b> (click to expand :point_down:)</summary>
 
 libcaer is not installed. Install it from the iniVation PPA:
 
