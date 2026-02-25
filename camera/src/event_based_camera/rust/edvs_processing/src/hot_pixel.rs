@@ -51,7 +51,7 @@ impl HotPixelFilter {
             self.window_start = ts;
         }
 
-        if ts - self.window_start >= self.window_us {
+        if ts.saturating_sub(self.window_start) >= self.window_us {
             // Evaluate which pixels are hot, then reset counts
             for i in 0..self.event_counts.len() {
                 self.hot_pixels[i] = self.event_counts[i] > self.max_rate;

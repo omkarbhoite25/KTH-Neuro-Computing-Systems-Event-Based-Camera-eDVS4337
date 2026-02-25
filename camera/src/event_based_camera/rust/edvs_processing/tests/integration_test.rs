@@ -1,11 +1,17 @@
 use edvs_processing::accumulator::Accumulator;
+use edvs_processing::decay_accumulator::DecayAccumulator;
+use edvs_processing::decimation::DecimationFilter;
 use edvs_processing::denoise::TemporalFilter;
 use edvs_processing::event::Event;
 use edvs_processing::ffi;
 use edvs_processing::hot_pixel::HotPixelFilter;
+use edvs_processing::polarity::{PolarityFilter, PolarityMode};
+use edvs_processing::refractory::RefractoryFilter;
+use edvs_processing::roi::RoiFilter;
+use edvs_processing::transform::{SpatialTransform, TransformType};
 
 // ---------------------------------------------------------------------------
-// Full pipeline integration tests: temporal → hot pixel → accumulator
+// Full pipeline integration tests: temporal -> hot pixel -> accumulator
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -26,7 +32,7 @@ fn test_full_pipeline_normal_events() {
     assert!(pass_hot, "normal-rate event should pass hot pixel filter");
 
     acc.accumulate(&ev2);
-    // Pixel (11, 10): index = 10*128 + 11 = 1291. OFF event → 128 - 1 = 127
+    // Pixel (11, 10): index = 10*128 + 11 = 1291. OFF event -> 128 - 1 = 127
     assert_eq!(acc.get_frame()[10 * 128 + 11], 127);
 }
 
@@ -106,17 +112,17 @@ fn test_pipeline_accumulator_frame_after_mixed_events() {
     let mut acc = Accumulator::new(4, 4);
 
     // Apply known events directly to accumulator
-    // Pixel (0,0): 3 ON events → 128 + 3 = 131
+    // Pixel (0,0): 3 ON events -> 128 + 3 = 131
     for i in 0..3 {
         acc.accumulate(&Event::new(0, 0, 1000 * i, 1));
     }
 
-    // Pixel (3,3): 2 OFF events → 128 - 2 = 126
+    // Pixel (3,3): 2 OFF events -> 128 - 2 = 126
     for i in 0..2 {
         acc.accumulate(&Event::new(3, 3, 1000 * i, -1));
     }
 
-    // Pixel (1,2): 1 ON + 1 OFF → 128 + 1 - 1 = 128 (neutral)
+    // Pixel (1,2): 1 ON + 1 OFF -> 128 + 1 - 1 = 128 (neutral)
     acc.accumulate(&Event::new(1, 2, 1000, 1));
     acc.accumulate(&Event::new(1, 2, 2000, -1));
 
@@ -148,12 +154,250 @@ fn test_pipeline_accumulator_clamp_after_many_events() {
 }
 
 // ---------------------------------------------------------------------------
-// FFI null pointer safety tests
+// Phase 1: Refractory filter integration
 // ---------------------------------------------------------------------------
 
-// Call FFI functions through the crate's public ffi module instead of
-// re-declaring extern "C" blocks (which would trigger improper_ctypes
-// warnings since the filter structs are opaque, non-repr(C) types).
+#[test]
+fn test_pipeline_refractory_suppresses_rapid_events() {
+    let mut temporal = TemporalFilter::new(128, 128, 5000);
+    let mut refractory = RefractoryFilter::new(128, 128, 2000);
+    let mut acc = Accumulator::new(128, 128);
+
+    // Create temporal neighbor
+    temporal.filter(&Event::new(10, 10, 100_000, 1));
+
+    // Rapid burst at (11, 10) — only first should pass refractory
+    let mut passed = 0u32;
+    for i in 0..5 {
+        let ev = Event::new(11, 10, 100_500 + i * 200, 1);
+        if temporal.filter(&ev) && refractory.filter(&ev) {
+            acc.accumulate(&ev);
+            passed += 1;
+        }
+    }
+
+    assert_eq!(passed, 1, "only first event of rapid burst should pass refractory");
+}
+
+#[test]
+fn test_pipeline_refractory_allows_spaced_events() {
+    let mut refractory = RefractoryFilter::new(128, 128, 1000);
+
+    let ev1 = Event::new(10, 10, 100_000, 1);
+    let ev2 = Event::new(10, 10, 102_000, 1); // 2000us apart > 1000us period
+
+    assert!(refractory.filter(&ev1));
+    assert!(refractory.filter(&ev2));
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1: Polarity filter integration
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_pipeline_polarity_on_only() {
+    let polarity = PolarityFilter::new(PolarityMode::OnOnly);
+    let mut acc = Accumulator::new(4, 4);
+
+    let events = vec![
+        Event::new(0, 0, 100, 1),
+        Event::new(1, 0, 200, -1),
+        Event::new(2, 0, 300, 1),
+        Event::new(3, 0, 400, -1),
+    ];
+
+    let mut on_count = 0u32;
+    for ev in &events {
+        if polarity.filter(ev) {
+            acc.accumulate(ev);
+            on_count += 1;
+        }
+    }
+
+    assert_eq!(on_count, 2);
+    assert_eq!(acc.get_frame()[0], 129); // ON
+    assert_eq!(acc.get_frame()[1], 128); // OFF filtered out
+    assert_eq!(acc.get_frame()[2], 129); // ON
+    assert_eq!(acc.get_frame()[3], 128); // OFF filtered out
+}
+
+#[test]
+fn test_pipeline_polarity_off_only() {
+    let polarity = PolarityFilter::new(PolarityMode::OffOnly);
+
+    assert!(!polarity.filter(&Event::new(0, 0, 100, 1)));
+    assert!(polarity.filter(&Event::new(0, 0, 200, -1)));
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1: ROI filter integration
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_pipeline_roi_filters_outside() {
+    let roi = RoiFilter::new(20, 20, 60, 60);
+    let mut acc = Accumulator::new(128, 128);
+
+    let events = vec![
+        Event::new(30, 30, 100, 1),  // inside
+        Event::new(10, 10, 200, 1),  // outside
+        Event::new(70, 70, 300, 1),  // outside
+        Event::new(50, 50, 400, -1), // inside
+    ];
+
+    let mut passed = 0u32;
+    for ev in &events {
+        if roi.filter(ev) {
+            acc.accumulate(ev);
+            passed += 1;
+        }
+    }
+
+    assert_eq!(passed, 2);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1: Decimation filter integration
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_pipeline_decimation_reduces_rate() {
+    let mut decimation = DecimationFilter::new(5);
+    let mut acc = Accumulator::new(128, 128);
+
+    let mut passed = 0u32;
+    for i in 0..100 {
+        let ev = Event::new(10, 10, 100 + i * 10, 1);
+        if decimation.filter(&ev) {
+            acc.accumulate(&ev);
+            passed += 1;
+        }
+    }
+
+    assert_eq!(passed, 20); // 100 / 5 = 20
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1: Transform integration
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_pipeline_transform_with_accumulator() {
+    let transform = SpatialTransform::new(TransformType::FlipHorizontal, 4, 4);
+    let mut acc = Accumulator::new(4, 4);
+
+    let mut ev = Event::new(0, 0, 100, 1);
+    assert!(transform.apply(&mut ev));
+    // FlipH: x=0 -> x=3
+    let (x, y) = (ev.x, ev.y);
+    assert_eq!(x, 3);
+    assert_eq!(y, 0);
+
+    acc.accumulate(&ev);
+    assert_eq!(acc.get_frame()[3], 129); // pixel (3,0) got the ON event
+    assert_eq!(acc.get_frame()[0], 128); // original (0,0) untouched
+}
+
+#[test]
+fn test_pipeline_transform_rotate_accumulate() {
+    let transform = SpatialTransform::new(TransformType::Rotate180, 4, 4);
+    let mut acc = Accumulator::new(4, 4);
+
+    let mut ev = Event::new(1, 0, 100, 1);
+    assert!(transform.apply(&mut ev));
+    // Rot180: (1,0) -> (2,3)
+    let (x, y) = (ev.x, ev.y);
+    assert_eq!(x, 2);
+    assert_eq!(y, 3);
+
+    acc.accumulate(&ev);
+    assert_eq!(acc.get_frame()[3 * 4 + 2], 129);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1: Decay accumulator integration
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_pipeline_decay_accumulator_fades() {
+    let mut acc = DecayAccumulator::new(4, 4, 100_000.0, 10.0, 128.0, 0.0, 255.0);
+
+    // Event at t=100000
+    acc.accumulate(&Event::new(0, 0, 100_000, 1));
+    let val_immediately = acc.get_values()[0];
+    assert!((val_immediately - 138.0).abs() < 0.1); // 128 + 10
+
+    // Much later event at same pixel — value should have decayed toward 128
+    acc.accumulate(&Event::new(0, 0, 1_000_000, 1));
+    // dt = 900000, tau = 100000, decay = exp(-9) ~ 0.000123
+    // decayed = 128 + (138-128)*0.000123 ~ 128.00123
+    // + 10 = 138.00123
+    let val_later = acc.get_values()[0];
+    assert!(
+        (val_later - 138.0).abs() < 0.1,
+        "after long time, value should be ~neutral+contribution: got {}",
+        val_later
+    );
+}
+
+#[test]
+fn test_pipeline_decay_accumulator_u8_frame() {
+    let mut acc = DecayAccumulator::new(4, 4, 100_000.0, 50.0, 128.0, 0.0, 255.0);
+    acc.accumulate(&Event::new(0, 0, 100_000, 1)); // -> 178
+    acc.accumulate(&Event::new(1, 0, 100_000, -1)); // -> 78
+
+    let frame = acc.get_frame_u8();
+    // 178 / 255 * 255 = 178
+    assert_eq!(frame[0], 178);
+    // 78 / 255 * 255 = 78
+    assert_eq!(frame[1], 78);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1: Combined pipeline — all filters chained
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_full_extended_pipeline() {
+    let mut temporal = TemporalFilter::new(128, 128, 5000);
+    let mut hot_pixel = HotPixelFilter::new(128, 128, 1_000_000, 1000);
+    let mut refractory = RefractoryFilter::new(128, 128, 500);
+    let polarity = PolarityFilter::new(PolarityMode::OnOnly);
+    let roi = RoiFilter::new(0, 0, 63, 63); // left half
+    let mut decimation = DecimationFilter::new(1); // pass all
+    let mut acc = Accumulator::new(128, 128);
+
+    // Create neighbor for temporal filter
+    temporal.filter(&Event::new(30, 30, 100_000, 1));
+
+    // Event that should pass all filters
+    let ev = Event::new(31, 30, 101_000, 1); // neighbor, ON, in ROI, first at pixel
+    let passes = temporal.filter(&ev)
+        && hot_pixel.filter(&ev)
+        && refractory.filter(&ev)
+        && polarity.filter(&ev)
+        && roi.filter(&ev)
+        && decimation.filter(&ev);
+
+    assert!(passes, "valid event should pass all filters");
+    acc.accumulate(&ev);
+    assert_eq!(acc.get_frame()[30 * 128 + 31], 129);
+}
+
+#[test]
+fn test_extended_pipeline_roi_rejects() {
+    let roi = RoiFilter::new(0, 0, 63, 63);
+    let polarity = PolarityFilter::new(PolarityMode::Both);
+
+    // Event outside ROI
+    let ev = Event::new(100, 100, 100_000, 1);
+    assert!(polarity.filter(&ev)); // passes polarity
+    assert!(!roi.filter(&ev));     // rejected by ROI
+}
+
+// ---------------------------------------------------------------------------
+// FFI null pointer safety tests
+// ---------------------------------------------------------------------------
 
 #[test]
 fn test_ffi_temporal_null_filter() {
@@ -250,7 +494,7 @@ fn test_ffi_accumulator_round_trip() {
 
 #[test]
 fn test_ffi_create_invalid_params_returns_null() {
-    // Zero dimensions should trigger assertion → catch_unwind → null
+    // Zero dimensions should trigger assertion -> catch_unwind -> null
     let filter = ffi::edvs_temporal_filter_create(0, 128, 5000);
     assert!(filter.is_null(), "invalid params should return null");
 
@@ -259,4 +503,207 @@ fn test_ffi_create_invalid_params_returns_null() {
 
     let acc = ffi::edvs_accumulator_create(0, 0);
     assert!(acc.is_null(), "invalid params should return null");
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1: FFI null safety for new filters
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_ffi_refractory_null_safety() {
+    unsafe {
+        let ev = Event::new(0, 0, 100, 1);
+        assert!(!ffi::edvs_refractory_filter_process(std::ptr::null_mut(), &ev));
+        ffi::edvs_refractory_filter_destroy(std::ptr::null_mut());
+    }
+}
+
+#[test]
+fn test_ffi_refractory_round_trip() {
+    unsafe {
+        let filter = ffi::edvs_refractory_filter_create(128, 128, 1000);
+        assert!(!filter.is_null());
+
+        let ev1 = Event::new(10, 10, 100_000, 1);
+        assert!(ffi::edvs_refractory_filter_process(filter, &ev1));
+
+        // Within refractory
+        let ev2 = Event::new(10, 10, 100_500, 1);
+        assert!(!ffi::edvs_refractory_filter_process(filter, &ev2));
+
+        // Past refractory
+        let ev3 = Event::new(10, 10, 101_500, 1);
+        assert!(ffi::edvs_refractory_filter_process(filter, &ev3));
+
+        ffi::edvs_refractory_filter_destroy(filter);
+    }
+}
+
+#[test]
+fn test_ffi_refractory_invalid_params() {
+    let filter = ffi::edvs_refractory_filter_create(0, 128, 1000);
+    assert!(filter.is_null());
+
+    let filter = ffi::edvs_refractory_filter_create(128, 128, 0);
+    assert!(filter.is_null());
+}
+
+#[test]
+fn test_ffi_polarity_null_safety() {
+    unsafe {
+        let ev = Event::new(0, 0, 100, 1);
+        assert!(!ffi::edvs_polarity_filter_process(std::ptr::null(), &ev));
+        ffi::edvs_polarity_filter_destroy(std::ptr::null_mut());
+    }
+}
+
+#[test]
+fn test_ffi_polarity_round_trip() {
+    unsafe {
+        let filter = ffi::edvs_polarity_filter_create(0); // OnOnly
+        assert!(!filter.is_null());
+
+        assert!(ffi::edvs_polarity_filter_process(filter, &Event::new(0, 0, 100, 1)));
+        assert!(!ffi::edvs_polarity_filter_process(filter, &Event::new(0, 0, 200, -1)));
+
+        ffi::edvs_polarity_filter_destroy(filter);
+    }
+}
+
+#[test]
+fn test_ffi_roi_null_safety() {
+    unsafe {
+        let ev = Event::new(0, 0, 100, 1);
+        assert!(!ffi::edvs_roi_filter_process(std::ptr::null(), &ev));
+        ffi::edvs_roi_filter_destroy(std::ptr::null_mut());
+    }
+}
+
+#[test]
+fn test_ffi_roi_round_trip() {
+    unsafe {
+        let filter = ffi::edvs_roi_filter_create(10, 10, 50, 50);
+        assert!(!filter.is_null());
+
+        assert!(ffi::edvs_roi_filter_process(filter, &Event::new(30, 30, 100, 1)));
+        assert!(!ffi::edvs_roi_filter_process(filter, &Event::new(5, 5, 100, 1)));
+
+        ffi::edvs_roi_filter_destroy(filter);
+    }
+}
+
+#[test]
+fn test_ffi_roi_invalid_params() {
+    let filter = ffi::edvs_roi_filter_create(50, 10, 10, 50); // x_min > x_max
+    assert!(filter.is_null());
+}
+
+#[test]
+fn test_ffi_decimation_null_safety() {
+    unsafe {
+        let ev = Event::new(0, 0, 100, 1);
+        assert!(!ffi::edvs_decimation_filter_process(std::ptr::null_mut(), &ev));
+        ffi::edvs_decimation_filter_destroy(std::ptr::null_mut());
+    }
+}
+
+#[test]
+fn test_ffi_decimation_round_trip() {
+    unsafe {
+        let filter = ffi::edvs_decimation_filter_create(3);
+        assert!(!filter.is_null());
+
+        let ev = Event::new(0, 0, 100, 1);
+        assert!(!ffi::edvs_decimation_filter_process(filter, &ev)); // 1
+        assert!(!ffi::edvs_decimation_filter_process(filter, &ev)); // 2
+        assert!(ffi::edvs_decimation_filter_process(filter, &ev));  // 3 -> pass
+
+        ffi::edvs_decimation_filter_destroy(filter);
+    }
+}
+
+#[test]
+fn test_ffi_decimation_invalid_params() {
+    let filter = ffi::edvs_decimation_filter_create(0);
+    assert!(filter.is_null());
+}
+
+#[test]
+fn test_ffi_spatial_transform_null_safety() {
+    unsafe {
+        let mut ev = Event::new(0, 0, 100, 1);
+        assert!(!ffi::edvs_spatial_transform_apply(std::ptr::null(), &mut ev));
+        ffi::edvs_spatial_transform_destroy(std::ptr::null_mut());
+    }
+}
+
+#[test]
+fn test_ffi_spatial_transform_round_trip() {
+    unsafe {
+        let t = ffi::edvs_spatial_transform_create(0, 128, 128); // FlipHorizontal
+        assert!(!t.is_null());
+
+        let mut ev = Event::new(10, 20, 100, 1);
+        assert!(ffi::edvs_spatial_transform_apply(t, &mut ev));
+        let (x, y) = (ev.x, ev.y);
+        assert_eq!(x, 117); // 128-1-10
+        assert_eq!(y, 20);
+
+        ffi::edvs_spatial_transform_destroy(t);
+    }
+}
+
+#[test]
+fn test_ffi_spatial_transform_invalid_type() {
+    let t = ffi::edvs_spatial_transform_create(99, 128, 128);
+    assert!(t.is_null());
+}
+
+#[test]
+fn test_ffi_decay_accumulator_null_safety() {
+    unsafe {
+        let ev = Event::new(0, 0, 100, 1);
+        ffi::edvs_decay_accumulator_accumulate(std::ptr::null_mut(), &ev);
+
+        let mut len: usize = 0;
+        let ptr = ffi::edvs_decay_accumulator_get_frame_u8(std::ptr::null(), &mut len);
+        assert!(ptr.is_null());
+
+        ffi::edvs_decay_accumulator_reset(std::ptr::null_mut());
+        ffi::edvs_decay_accumulator_destroy(std::ptr::null_mut());
+    }
+}
+
+#[test]
+fn test_ffi_decay_accumulator_round_trip() {
+    unsafe {
+        let acc = ffi::edvs_decay_accumulator_create(4, 4, 100_000.0, 1.0, 128.0, 0.0, 255.0);
+        assert!(!acc.is_null());
+
+        let ev = Event::new(1, 1, 100_000, 1);
+        ffi::edvs_decay_accumulator_accumulate(acc, &ev);
+
+        let mut len: usize = 0;
+        let ptr = ffi::edvs_decay_accumulator_get_frame_u8(acc, &mut len);
+        assert!(!ptr.is_null());
+        assert_eq!(len, 16);
+
+        let frame = std::slice::from_raw_parts(ptr, len);
+        // pixel (1,1) = idx 5: value=129, mapped to u8 via 129/255*255 = 129
+        assert_eq!(frame[5], 129);
+
+        ffi::edvs_decay_accumulator_free_frame(ptr, len);
+
+        ffi::edvs_decay_accumulator_reset(acc);
+        ffi::edvs_decay_accumulator_destroy(acc);
+    }
+}
+
+#[test]
+fn test_ffi_decay_accumulator_invalid_params() {
+    let acc = ffi::edvs_decay_accumulator_create(0, 4, 100_000.0, 1.0, 128.0, 0.0, 255.0);
+    assert!(acc.is_null());
+
+    let acc = ffi::edvs_decay_accumulator_create(4, 4, -1.0, 1.0, 128.0, 0.0, 255.0);
+    assert!(acc.is_null());
 }
