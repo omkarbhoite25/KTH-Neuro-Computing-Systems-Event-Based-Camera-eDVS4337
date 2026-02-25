@@ -1,13 +1,19 @@
 use edvs_processing::accumulator::Accumulator;
+use edvs_processing::anti_flicker::AntiFlickerFilter;
 use edvs_processing::decay_accumulator::DecayAccumulator;
 use edvs_processing::decimation::DecimationFilter;
 use edvs_processing::denoise::TemporalFilter;
 use edvs_processing::event::Event;
 use edvs_processing::ffi;
 use edvs_processing::hot_pixel::HotPixelFilter;
+use edvs_processing::mask::MaskFilter;
 use edvs_processing::polarity::{PolarityFilter, PolarityMode};
+use edvs_processing::rate_stats::EventRateStats;
 use edvs_processing::refractory::RefractoryFilter;
 use edvs_processing::roi::RoiFilter;
+use edvs_processing::slicer::{EventSlicer, SliceMode};
+use edvs_processing::stc::StcFilter;
+use edvs_processing::time_surface::TimeSurface;
 use edvs_processing::transform::{SpatialTransform, TransformType};
 
 // ---------------------------------------------------------------------------
@@ -706,4 +712,331 @@ fn test_ffi_decay_accumulator_invalid_params() {
 
     let acc = ffi::edvs_decay_accumulator_create(4, 4, -1.0, 1.0, 128.0, 0.0, 255.0);
     assert!(acc.is_null());
+}
+
+// =========================================================================
+// Phase 2: Time Surface integration
+// =========================================================================
+
+#[test]
+fn test_pipeline_time_surface_with_filters() {
+    let mut temporal = TemporalFilter::new(128, 128, 5000);
+    let mut ts = TimeSurface::new(128, 128, 100_000.0);
+
+    // Create temporal neighbor
+    temporal.filter(&Event::new(10, 10, 100_000, 1));
+    ts.update(&Event::new(10, 10, 100_000, 1));
+
+    let ev = Event::new(11, 10, 102_000, 1);
+    if temporal.filter(&ev) {
+        ts.update(&ev);
+    }
+
+    assert_eq!(ts.get_timestamp(11, 10), 102_000);
+    let frame = ts.get_frame_at(102_000);
+    // Recently updated pixel should be bright
+    assert!(frame[10 * 128 + 11] > 200);
+}
+
+// =========================================================================
+// Phase 2: Event Slicer integration
+// =========================================================================
+
+#[test]
+fn test_pipeline_slicer_batches_events() {
+    let mut slicer = EventSlicer::new(SliceMode::ByCount, 10);
+    let mut batch_count = 0u32;
+
+    for i in 0..50 {
+        if slicer.process(&Event::new(0, 0, i * 1000, 1)) {
+            batch_count += 1;
+        }
+    }
+
+    assert_eq!(batch_count, 5);
+}
+
+#[test]
+fn test_pipeline_slicer_time_window() {
+    let mut slicer = EventSlicer::new(SliceMode::ByTime, 100_000);
+    let mut batch_count = 0u32;
+
+    for i in 0..500 {
+        if slicer.process(&Event::new(0, 0, i * 1000, 1)) {
+            batch_count += 1;
+        }
+    }
+
+    assert!((3..=6).contains(&batch_count));
+}
+
+// =========================================================================
+// Phase 2: Anti-Flicker integration
+// =========================================================================
+
+#[test]
+fn test_pipeline_anti_flicker_rejects_periodic() {
+    let mut anti_flicker = AntiFlickerFilter::new(128, 128, 10_000, 500);
+    let mut acc = Accumulator::new(128, 128);
+
+    // Simulate 50Hz flicker at pixel (10,10)
+    let mut passed = 0u32;
+    for i in 0..10 {
+        let ev = Event::new(10, 10, 100_000 + i * 10_000, 1);
+        if anti_flicker.filter(&ev) {
+            acc.accumulate(&ev);
+            passed += 1;
+        }
+    }
+
+    // First event always passes, subsequent periodic events should be rejected
+    assert!(passed < 5, "most periodic events should be rejected, got {}", passed);
+}
+
+// =========================================================================
+// Phase 2: STC Filter integration
+// =========================================================================
+
+#[test]
+fn test_pipeline_stc_polarity_aware() {
+    let mut stc = StcFilter::new(128, 128, 5000);
+
+    // ON event at (10,10)
+    stc.filter(&Event::new(10, 10, 100_000, 1));
+
+    // Same polarity neighbor — should pass
+    assert!(stc.filter(&Event::new(11, 10, 102_000, 1)));
+
+    // Reset with OFF event at (20,20)
+    stc.filter(&Event::new(20, 20, 200_000, -1));
+
+    // ON event at neighbor (21,20) — different polarity — should fail
+    assert!(!stc.filter(&Event::new(21, 20, 202_000, 1)));
+}
+
+// =========================================================================
+// Phase 2: Rate Statistics integration
+// =========================================================================
+
+#[test]
+fn test_pipeline_rate_stats_with_filters() {
+    let mut stats = EventRateStats::new(100_000); // 100ms window
+    let polarity = PolarityFilter::new(PolarityMode::OnOnly);
+
+    let mut rate_computed = false;
+    for i in 0..200 {
+        let ev = Event::new((i % 128) as u16, 0, i as i64 * 1000, 1);
+        if polarity.filter(&ev) && stats.record(&ev).is_some() {
+            rate_computed = true;
+        }
+    }
+
+    assert!(rate_computed);
+    assert!(stats.total_count() > 0);
+    assert!(stats.last_rate() > 0.0);
+}
+
+// =========================================================================
+// Phase 2: Mask Filter integration
+// =========================================================================
+
+#[test]
+fn test_pipeline_mask_with_hot_pixels() {
+    let mut mask = MaskFilter::new(128, 128);
+    let mut acc = Accumulator::new(128, 128);
+
+    // Mask out known noisy corner
+    mask.set_rect(0, 0, 5, 5, false);
+
+    let events = vec![
+        Event::new(3, 3, 100, 1),   // masked
+        Event::new(10, 10, 200, 1), // active
+        Event::new(0, 0, 300, 1),   // masked
+        Event::new(64, 64, 400, 1), // active
+    ];
+
+    let mut passed = 0u32;
+    for ev in &events {
+        if mask.filter(ev) {
+            acc.accumulate(ev);
+            passed += 1;
+        }
+    }
+
+    assert_eq!(passed, 2);
+}
+
+// =========================================================================
+// Phase 2: Combined extended pipeline
+// =========================================================================
+
+#[test]
+fn test_phase2_full_pipeline() {
+    let mut temporal = TemporalFilter::new(128, 128, 5000);
+    let mut refractory = RefractoryFilter::new(128, 128, 500);
+    let mut stc = StcFilter::new(128, 128, 5000);
+    let mut mask = MaskFilter::new(128, 128);
+    let mut ts = TimeSurface::new(128, 128, 100_000.0);
+    let mut stats = EventRateStats::new(100_000);
+
+    // Mask out borders
+    mask.set_rect(0, 0, 127, 0, false);
+
+    // Process a sequence of events
+    temporal.filter(&Event::new(30, 30, 100_000, 1));
+    let ev = Event::new(31, 30, 101_000, 1);
+
+    let passes = temporal.filter(&ev)
+        && refractory.filter(&ev)
+        && mask.filter(&ev);
+
+    assert!(passes);
+    ts.update(&ev);
+    stats.record(&ev);
+    // Also try STC — needs same-polarity neighbor
+    stc.filter(&Event::new(30, 30, 100_000, 1));
+    assert!(stc.filter(&Event::new(31, 30, 101_000, 1)));
+}
+
+// =========================================================================
+// Phase 2: FFI null safety tests
+// =========================================================================
+
+#[test]
+fn test_ffi_time_surface_null_safety() {
+    unsafe {
+        ffi::edvs_time_surface_update(std::ptr::null_mut(), &Event::new(0, 0, 100, 1));
+        let mut len: usize = 0;
+        let ptr = ffi::edvs_time_surface_get_frame(std::ptr::null(), 100, &mut len);
+        assert!(ptr.is_null());
+        ffi::edvs_time_surface_reset(std::ptr::null_mut());
+        ffi::edvs_time_surface_destroy(std::ptr::null_mut());
+    }
+}
+
+#[test]
+fn test_ffi_time_surface_round_trip() {
+    unsafe {
+        let ts = ffi::edvs_time_surface_create(4, 4, 100_000.0);
+        assert!(!ts.is_null());
+
+        ffi::edvs_time_surface_update(ts, &Event::new(1, 1, 100_000, 1));
+
+        let mut len: usize = 0;
+        let ptr = ffi::edvs_time_surface_get_frame(ts, 100_000, &mut len);
+        assert!(!ptr.is_null());
+        assert_eq!(len, 16);
+
+        let frame = std::slice::from_raw_parts(ptr, len);
+        assert_eq!(frame[5], 255); // pixel (1,1) at current time = max
+
+        ffi::edvs_time_surface_free_frame(ptr, len);
+        ffi::edvs_time_surface_destroy(ts);
+    }
+}
+
+#[test]
+fn test_ffi_slicer_null_safety() {
+    unsafe {
+        assert!(!ffi::edvs_slicer_process(std::ptr::null_mut(), &Event::new(0, 0, 100, 1)));
+        ffi::edvs_slicer_destroy(std::ptr::null_mut());
+    }
+}
+
+#[test]
+fn test_ffi_slicer_round_trip() {
+    unsafe {
+        let s = ffi::edvs_slicer_create(0, 3); // ByCount, threshold=3
+        assert!(!s.is_null());
+
+        let ev = Event::new(0, 0, 100, 1);
+        assert!(!ffi::edvs_slicer_process(s, &ev));
+        assert!(!ffi::edvs_slicer_process(s, &ev));
+        assert!(ffi::edvs_slicer_process(s, &ev));
+
+        ffi::edvs_slicer_destroy(s);
+    }
+}
+
+#[test]
+fn test_ffi_anti_flicker_null_safety() {
+    unsafe {
+        assert!(!ffi::edvs_anti_flicker_filter_process(
+            std::ptr::null_mut(),
+            &Event::new(0, 0, 100, 1)
+        ));
+        ffi::edvs_anti_flicker_filter_destroy(std::ptr::null_mut());
+    }
+}
+
+#[test]
+fn test_ffi_stc_null_safety() {
+    unsafe {
+        assert!(!ffi::edvs_stc_filter_process(
+            std::ptr::null_mut(),
+            &Event::new(0, 0, 100, 1)
+        ));
+        ffi::edvs_stc_filter_destroy(std::ptr::null_mut());
+    }
+}
+
+#[test]
+fn test_ffi_rate_stats_null_safety() {
+    unsafe {
+        let mut rate: f64 = 0.0;
+        assert!(!ffi::edvs_rate_stats_record(
+            std::ptr::null_mut(),
+            &Event::new(0, 0, 100, 1),
+            &mut rate
+        ));
+        assert_eq!(ffi::edvs_rate_stats_last_rate(std::ptr::null()), 0.0);
+        assert_eq!(ffi::edvs_rate_stats_peak_rate(std::ptr::null()), 0.0);
+        assert_eq!(ffi::edvs_rate_stats_total_count(std::ptr::null()), 0);
+        ffi::edvs_rate_stats_destroy(std::ptr::null_mut());
+    }
+}
+
+#[test]
+fn test_ffi_rate_stats_round_trip() {
+    unsafe {
+        let s = ffi::edvs_rate_stats_create(100_000);
+        assert!(!s.is_null());
+
+        let mut rate: f64 = 0.0;
+        for i in 0..200 {
+            ffi::edvs_rate_stats_record(s, &Event::new(0, 0, i * 1000, 1), &mut rate);
+        }
+
+        assert!(ffi::edvs_rate_stats_total_count(s) == 200);
+        ffi::edvs_rate_stats_destroy(s);
+    }
+}
+
+#[test]
+fn test_ffi_mask_null_safety() {
+    unsafe {
+        assert!(!ffi::edvs_mask_filter_process(
+            std::ptr::null(),
+            &Event::new(0, 0, 100, 1)
+        ));
+        ffi::edvs_mask_filter_set_pixel(std::ptr::null_mut(), 0, 0, false);
+        ffi::edvs_mask_filter_destroy(std::ptr::null_mut());
+    }
+}
+
+#[test]
+fn test_ffi_mask_round_trip() {
+    unsafe {
+        let m = ffi::edvs_mask_filter_create(4, 4);
+        assert!(!m.is_null());
+
+        // All enabled by default
+        assert!(ffi::edvs_mask_filter_process(m, &Event::new(1, 1, 100, 1)));
+
+        // Disable pixel
+        ffi::edvs_mask_filter_set_pixel(m, 1, 1, false);
+        assert!(!ffi::edvs_mask_filter_process(m, &Event::new(1, 1, 100, 1)));
+
+        ffi::edvs_mask_filter_destroy(m);
+    }
 }
