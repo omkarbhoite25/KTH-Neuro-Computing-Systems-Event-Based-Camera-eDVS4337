@@ -17,6 +17,12 @@ use crate::stc::StcFilter;
 use crate::time_surface::TimeSurface;
 use crate::transform::{SpatialTransform, TransformType};
 
+use crate::corner::HarrisCornerDetector;
+use crate::frequency::FrequencyEstimator;
+use crate::optical_flow::OpticalFlowEstimator;
+use crate::sits::SpeedInvariantTimeSurface;
+use crate::voxel_grid::VoxelGrid;
+
 // --- TemporalFilter FFI ---
 
 /// Creates a new temporal denoising filter.
@@ -913,5 +919,367 @@ pub unsafe extern "C" fn edvs_mask_filter_set_rect(
 pub unsafe extern "C" fn edvs_mask_filter_destroy(filter: *mut MaskFilter) {
     if !filter.is_null() {
         drop(Box::from_raw(filter));
+    }
+}
+
+// =========================================================================
+// Phase 3 FFI exports
+// =========================================================================
+
+// --- SpeedInvariantTimeSurface FFI ---
+
+/// Creates a speed-invariant time surface.
+///
+/// Returns null if parameters are invalid.
+#[no_mangle]
+pub extern "C" fn edvs_sits_create(
+    width: u32,
+    height: u32,
+    radius: u32,
+) -> *mut SpeedInvariantTimeSurface {
+    let result =
+        panic::catch_unwind(|| Box::new(SpeedInvariantTimeSurface::new(width, height, radius)));
+    match result {
+        Ok(s) => Box::into_raw(s),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// # Safety
+/// - `sits` and `event` must be valid, non-null pointers.
+#[no_mangle]
+pub unsafe extern "C" fn edvs_sits_update(
+    sits: *mut SpeedInvariantTimeSurface,
+    event: *const Event,
+) {
+    if sits.is_null() || event.is_null() {
+        return;
+    }
+    let s_ref = &mut *sits;
+    let ev_ref = &*event;
+    let _ = panic::catch_unwind(panic::AssertUnwindSafe(|| s_ref.update(ev_ref)));
+}
+
+/// # Safety
+/// - `sits` must be a valid pointer returned by `edvs_sits_create`, or null.
+#[no_mangle]
+pub unsafe extern "C" fn edvs_sits_reset(sits: *mut SpeedInvariantTimeSurface) {
+    if !sits.is_null() {
+        let s_ref = &mut *sits;
+        let _ = panic::catch_unwind(panic::AssertUnwindSafe(|| s_ref.reset()));
+    }
+}
+
+/// # Safety
+/// - `sits` must be a valid pointer returned by `edvs_sits_create`, or null.
+#[no_mangle]
+pub unsafe extern "C" fn edvs_sits_destroy(sits: *mut SpeedInvariantTimeSurface) {
+    if !sits.is_null() {
+        drop(Box::from_raw(sits));
+    }
+}
+
+// --- VoxelGrid FFI ---
+
+/// Creates a voxel grid.
+///
+/// Returns null if parameters are invalid.
+#[no_mangle]
+pub extern "C" fn edvs_voxel_grid_create(
+    width: u32,
+    height: u32,
+    num_bins: u32,
+) -> *mut VoxelGrid {
+    let result = panic::catch_unwind(|| Box::new(VoxelGrid::new(width, height, num_bins)));
+    match result {
+        Ok(vg) => Box::into_raw(vg),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// # Safety
+/// - `vg` must be a valid, non-null pointer returned by `edvs_voxel_grid_create`.
+#[no_mangle]
+pub unsafe extern "C" fn edvs_voxel_grid_set_time_window(
+    vg: *mut VoxelGrid,
+    t_start: i64,
+    t_end: i64,
+) {
+    if vg.is_null() {
+        return;
+    }
+    let vg_ref = &mut *vg;
+    let _ = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        vg_ref.set_time_window(t_start, t_end)
+    }));
+}
+
+/// # Safety
+/// - `vg` and `event` must be valid, non-null pointers.
+#[no_mangle]
+pub unsafe extern "C" fn edvs_voxel_grid_add_event(vg: *mut VoxelGrid, event: *const Event) {
+    if vg.is_null() || event.is_null() {
+        return;
+    }
+    let vg_ref = &mut *vg;
+    let ev_ref = &*event;
+    let _ = panic::catch_unwind(panic::AssertUnwindSafe(|| vg_ref.add_event(ev_ref)));
+}
+
+/// # Safety
+/// - `vg` must be valid. Returns pointer to internal data valid until next mutation.
+/// - `out_len` must be valid if non-null.
+#[no_mangle]
+pub unsafe extern "C" fn edvs_voxel_grid_get_grid(
+    vg: *const VoxelGrid,
+    out_len: *mut usize,
+) -> *const f32 {
+    if vg.is_null() {
+        return std::ptr::null();
+    }
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        let vg_ref = &*vg;
+        let grid = vg_ref.get_grid();
+        if !out_len.is_null() {
+            *out_len = grid.len();
+        }
+        grid.as_ptr()
+    }));
+    match result {
+        Ok(ptr) => ptr,
+        Err(_) => std::ptr::null(),
+    }
+}
+
+/// # Safety
+/// - `vg` must be a valid pointer returned by `edvs_voxel_grid_create`, or null.
+#[no_mangle]
+pub unsafe extern "C" fn edvs_voxel_grid_reset(vg: *mut VoxelGrid) {
+    if !vg.is_null() {
+        let vg_ref = &mut *vg;
+        let _ = panic::catch_unwind(panic::AssertUnwindSafe(|| vg_ref.reset()));
+    }
+}
+
+/// # Safety
+/// - `vg` must be a valid pointer returned by `edvs_voxel_grid_create`, or null.
+#[no_mangle]
+pub unsafe extern "C" fn edvs_voxel_grid_destroy(vg: *mut VoxelGrid) {
+    if !vg.is_null() {
+        drop(Box::from_raw(vg));
+    }
+}
+
+// --- HarrisCornerDetector FFI ---
+
+/// Creates a Harris corner detector.
+///
+/// Returns null if parameters are invalid.
+#[no_mangle]
+pub extern "C" fn edvs_corner_detector_create(
+    width: u32,
+    height: u32,
+    harris_k: f64,
+    threshold: f64,
+) -> *mut HarrisCornerDetector {
+    let result = panic::catch_unwind(|| {
+        Box::new(HarrisCornerDetector::new(width, height, harris_k, threshold))
+    });
+    match result {
+        Ok(d) => Box::into_raw(d),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// # Safety
+/// - `det` and `event` must be valid, non-null pointers.
+///
+/// Returns true if the event is a corner. If `out_response` is non-null,
+/// writes the Harris response value.
+#[no_mangle]
+pub unsafe extern "C" fn edvs_corner_detector_process(
+    det: *mut HarrisCornerDetector,
+    event: *const Event,
+    out_response: *mut f64,
+) -> bool {
+    if det.is_null() || event.is_null() {
+        return false;
+    }
+    let d_ref = &mut *det;
+    let ev_ref = &*event;
+    let result =
+        panic::catch_unwind(panic::AssertUnwindSafe(|| d_ref.process(ev_ref))).unwrap_or(None);
+    match result {
+        Some(response) => {
+            if !out_response.is_null() {
+                *out_response = response;
+            }
+            true
+        }
+        None => false,
+    }
+}
+
+/// # Safety
+/// - `det` must be a valid pointer returned by `edvs_corner_detector_create`, or null.
+#[no_mangle]
+pub unsafe extern "C" fn edvs_corner_detector_reset(det: *mut HarrisCornerDetector) {
+    if !det.is_null() {
+        let d_ref = &mut *det;
+        let _ = panic::catch_unwind(panic::AssertUnwindSafe(|| d_ref.reset()));
+    }
+}
+
+/// # Safety
+/// - `det` must be a valid pointer returned by `edvs_corner_detector_create`, or null.
+#[no_mangle]
+pub unsafe extern "C" fn edvs_corner_detector_destroy(det: *mut HarrisCornerDetector) {
+    if !det.is_null() {
+        drop(Box::from_raw(det));
+    }
+}
+
+// --- FrequencyEstimator FFI ---
+
+/// Creates a per-pixel frequency estimator.
+///
+/// Returns null if parameters are invalid.
+#[no_mangle]
+pub extern "C" fn edvs_frequency_estimator_create(
+    width: u32,
+    height: u32,
+    history_len: u32,
+) -> *mut FrequencyEstimator {
+    let result =
+        panic::catch_unwind(|| Box::new(FrequencyEstimator::new(width, height, history_len)));
+    match result {
+        Ok(fe) => Box::into_raw(fe),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// # Safety
+/// - `fe` and `event` must be valid, non-null pointers.
+#[no_mangle]
+pub unsafe extern "C" fn edvs_frequency_estimator_record(
+    fe: *mut FrequencyEstimator,
+    event: *const Event,
+) {
+    if fe.is_null() || event.is_null() {
+        return;
+    }
+    let fe_ref = &mut *fe;
+    let ev_ref = &*event;
+    let _ = panic::catch_unwind(panic::AssertUnwindSafe(|| fe_ref.record(ev_ref)));
+}
+
+/// # Safety
+/// - `fe` must be a valid, non-null pointer.
+///
+/// Returns the estimated frequency in Hz at pixel (x, y), or -1.0 if
+/// not enough data is available.
+#[no_mangle]
+pub unsafe extern "C" fn edvs_frequency_estimator_estimate(
+    fe: *const FrequencyEstimator,
+    x: u16,
+    y: u16,
+) -> f64 {
+    if fe.is_null() {
+        return -1.0;
+    }
+    let fe_ref = &*fe;
+    panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        fe_ref.estimate_frequency(x, y).unwrap_or(-1.0)
+    }))
+    .unwrap_or(-1.0)
+}
+
+/// # Safety
+/// - `fe` must be a valid pointer returned by `edvs_frequency_estimator_create`, or null.
+#[no_mangle]
+pub unsafe extern "C" fn edvs_frequency_estimator_reset(fe: *mut FrequencyEstimator) {
+    if !fe.is_null() {
+        let fe_ref = &mut *fe;
+        let _ = panic::catch_unwind(panic::AssertUnwindSafe(|| fe_ref.reset()));
+    }
+}
+
+/// # Safety
+/// - `fe` must be a valid pointer returned by `edvs_frequency_estimator_create`, or null.
+#[no_mangle]
+pub unsafe extern "C" fn edvs_frequency_estimator_destroy(fe: *mut FrequencyEstimator) {
+    if !fe.is_null() {
+        drop(Box::from_raw(fe));
+    }
+}
+
+// --- OpticalFlowEstimator FFI ---
+
+/// Creates an optical flow estimator.
+///
+/// Returns null if parameters are invalid.
+#[no_mangle]
+pub extern "C" fn edvs_optical_flow_create(
+    width: u32,
+    height: u32,
+    radius: u32,
+) -> *mut OpticalFlowEstimator {
+    let result =
+        panic::catch_unwind(|| Box::new(OpticalFlowEstimator::new(width, height, radius)));
+    match result {
+        Ok(of) => Box::into_raw(of),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// # Safety
+/// - `of` and `event` must be valid, non-null pointers.
+///
+/// Returns true if flow was estimated. Writes vx, vy (pixels/second) to
+/// `out_vx` and `out_vy` if non-null.
+#[no_mangle]
+pub unsafe extern "C" fn edvs_optical_flow_process(
+    of: *mut OpticalFlowEstimator,
+    event: *const Event,
+    out_vx: *mut f64,
+    out_vy: *mut f64,
+) -> bool {
+    if of.is_null() || event.is_null() {
+        return false;
+    }
+    let of_ref = &mut *of;
+    let ev_ref = &*event;
+    let result =
+        panic::catch_unwind(panic::AssertUnwindSafe(|| of_ref.process(ev_ref))).unwrap_or(None);
+    match result {
+        Some(flow) => {
+            if !out_vx.is_null() {
+                *out_vx = flow.vx;
+            }
+            if !out_vy.is_null() {
+                *out_vy = flow.vy;
+            }
+            true
+        }
+        None => false,
+    }
+}
+
+/// # Safety
+/// - `of` must be a valid pointer returned by `edvs_optical_flow_create`, or null.
+#[no_mangle]
+pub unsafe extern "C" fn edvs_optical_flow_reset(of: *mut OpticalFlowEstimator) {
+    if !of.is_null() {
+        let of_ref = &mut *of;
+        let _ = panic::catch_unwind(panic::AssertUnwindSafe(|| of_ref.reset()));
+    }
+}
+
+/// # Safety
+/// - `of` must be a valid pointer returned by `edvs_optical_flow_create`, or null.
+#[no_mangle]
+pub unsafe extern "C" fn edvs_optical_flow_destroy(of: *mut OpticalFlowEstimator) {
+    if !of.is_null() {
+        drop(Box::from_raw(of));
     }
 }
