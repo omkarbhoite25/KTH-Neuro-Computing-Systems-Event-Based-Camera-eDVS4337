@@ -1,14 +1,20 @@
 use std::panic;
 
 use crate::accumulator::Accumulator;
+use crate::anti_flicker::AntiFlickerFilter;
 use crate::decay_accumulator::DecayAccumulator;
 use crate::decimation::DecimationFilter;
 use crate::denoise::TemporalFilter;
 use crate::event::Event;
 use crate::hot_pixel::HotPixelFilter;
+use crate::mask::MaskFilter;
 use crate::polarity::{PolarityFilter, PolarityMode};
+use crate::rate_stats::EventRateStats;
 use crate::refractory::RefractoryFilter;
 use crate::roi::RoiFilter;
+use crate::slicer::{EventSlicer, SliceMode};
+use crate::stc::StcFilter;
+use crate::time_surface::TimeSurface;
 use crate::transform::{SpatialTransform, TransformType};
 
 // --- TemporalFilter FFI ---
@@ -538,5 +544,374 @@ pub unsafe extern "C" fn edvs_decay_accumulator_reset(acc: *mut DecayAccumulator
 pub unsafe extern "C" fn edvs_decay_accumulator_destroy(acc: *mut DecayAccumulator) {
     if !acc.is_null() {
         drop(Box::from_raw(acc));
+    }
+}
+
+// =========================================================================
+// Phase 2 FFI exports
+// =========================================================================
+
+// --- TimeSurface FFI ---
+
+#[no_mangle]
+pub extern "C" fn edvs_time_surface_create(
+    width: u32,
+    height: u32,
+    decay_tau_us: f64,
+) -> *mut TimeSurface {
+    let result = panic::catch_unwind(|| Box::new(TimeSurface::new(width, height, decay_tau_us)));
+    match result {
+        Ok(ts) => Box::into_raw(ts),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// # Safety
+/// - `ts` and `event` must be valid, non-null pointers.
+#[no_mangle]
+pub unsafe extern "C" fn edvs_time_surface_update(ts: *mut TimeSurface, event: *const Event) {
+    if ts.is_null() || event.is_null() {
+        return;
+    }
+    let ts_ref = &mut *ts;
+    let ev_ref = &*event;
+    let _ = panic::catch_unwind(panic::AssertUnwindSafe(|| ts_ref.update(ev_ref)));
+}
+
+/// # Safety
+/// - `ts` must be valid. Caller must free returned buffer with `edvs_time_surface_free_frame`.
+#[no_mangle]
+pub unsafe extern "C" fn edvs_time_surface_get_frame(
+    ts: *const TimeSurface,
+    t_ref: i64,
+    out_len: *mut usize,
+) -> *mut u8 {
+    if ts.is_null() || out_len.is_null() {
+        return std::ptr::null_mut();
+    }
+    let ts_ref = &*ts;
+    let frame = ts_ref.get_frame_at(t_ref).into_boxed_slice();
+    *out_len = frame.len();
+    Box::into_raw(frame) as *mut u8
+}
+
+/// # Safety
+/// - `ptr` must be a pointer returned by `edvs_time_surface_get_frame`, or null.
+/// - `len` must be the length returned via `out_len`.
+#[no_mangle]
+pub unsafe extern "C" fn edvs_time_surface_free_frame(ptr: *mut u8, len: usize) {
+    if !ptr.is_null() && len > 0 {
+        drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len)));
+    }
+}
+
+/// # Safety
+/// - `ts` must be a valid pointer returned by `edvs_time_surface_create`, or null.
+#[no_mangle]
+pub unsafe extern "C" fn edvs_time_surface_reset(ts: *mut TimeSurface) {
+    if !ts.is_null() {
+        let ts_ref = &mut *ts;
+        let _ = panic::catch_unwind(panic::AssertUnwindSafe(|| ts_ref.reset()));
+    }
+}
+
+/// # Safety
+/// - `ts` must be a valid pointer returned by `edvs_time_surface_create`, or null.
+#[no_mangle]
+pub unsafe extern "C" fn edvs_time_surface_destroy(ts: *mut TimeSurface) {
+    if !ts.is_null() {
+        drop(Box::from_raw(ts));
+    }
+}
+
+// --- EventSlicer FFI ---
+
+/// `mode`: 0 = ByCount, 1 = ByTime.
+#[no_mangle]
+pub extern "C" fn edvs_slicer_create(mode: i32, threshold: i64) -> *mut EventSlicer {
+    let result = panic::catch_unwind(|| {
+        let m = SliceMode::from_i32(mode).expect("invalid slice mode");
+        Box::new(EventSlicer::new(m, threshold))
+    });
+    match result {
+        Ok(s) => Box::into_raw(s),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// # Safety
+/// - `slicer` and `event` must be valid, non-null pointers.
+#[no_mangle]
+pub unsafe extern "C" fn edvs_slicer_process(
+    slicer: *mut EventSlicer,
+    event: *const Event,
+) -> bool {
+    if slicer.is_null() || event.is_null() {
+        return false;
+    }
+    let s_ref = &mut *slicer;
+    let ev_ref = &*event;
+    panic::catch_unwind(panic::AssertUnwindSafe(|| s_ref.process(ev_ref))).unwrap_or(false)
+}
+
+/// # Safety
+/// - `slicer` must be a valid pointer returned by `edvs_slicer_create`, or null.
+#[no_mangle]
+pub unsafe extern "C" fn edvs_slicer_reset(slicer: *mut EventSlicer) {
+    if !slicer.is_null() {
+        let s_ref = &mut *slicer;
+        let _ = panic::catch_unwind(panic::AssertUnwindSafe(|| s_ref.reset()));
+    }
+}
+
+/// # Safety
+/// - `slicer` must be a valid pointer returned by `edvs_slicer_create`, or null.
+#[no_mangle]
+pub unsafe extern "C" fn edvs_slicer_destroy(slicer: *mut EventSlicer) {
+    if !slicer.is_null() {
+        drop(Box::from_raw(slicer));
+    }
+}
+
+// --- AntiFlickerFilter FFI ---
+
+#[no_mangle]
+pub extern "C" fn edvs_anti_flicker_filter_create(
+    width: u32,
+    height: u32,
+    period_us: i64,
+    tolerance_us: i64,
+) -> *mut AntiFlickerFilter {
+    let result = panic::catch_unwind(|| {
+        Box::new(AntiFlickerFilter::new(width, height, period_us, tolerance_us))
+    });
+    match result {
+        Ok(f) => Box::into_raw(f),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// # Safety
+/// - `filter` and `event` must be valid, non-null pointers.
+#[no_mangle]
+pub unsafe extern "C" fn edvs_anti_flicker_filter_process(
+    filter: *mut AntiFlickerFilter,
+    event: *const Event,
+) -> bool {
+    if filter.is_null() || event.is_null() {
+        return false;
+    }
+    let f_ref = &mut *filter;
+    let ev_ref = &*event;
+    panic::catch_unwind(panic::AssertUnwindSafe(|| f_ref.filter(ev_ref))).unwrap_or(false)
+}
+
+/// # Safety
+/// - `filter` must be a valid pointer returned by `edvs_anti_flicker_filter_create`, or null.
+#[no_mangle]
+pub unsafe extern "C" fn edvs_anti_flicker_filter_destroy(filter: *mut AntiFlickerFilter) {
+    if !filter.is_null() {
+        drop(Box::from_raw(filter));
+    }
+}
+
+// --- StcFilter FFI ---
+
+#[no_mangle]
+pub extern "C" fn edvs_stc_filter_create(
+    width: u32,
+    height: u32,
+    threshold_us: i64,
+) -> *mut StcFilter {
+    let result =
+        panic::catch_unwind(|| Box::new(StcFilter::new(width, height, threshold_us)));
+    match result {
+        Ok(f) => Box::into_raw(f),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// # Safety
+/// - `filter` and `event` must be valid, non-null pointers.
+#[no_mangle]
+pub unsafe extern "C" fn edvs_stc_filter_process(
+    filter: *mut StcFilter,
+    event: *const Event,
+) -> bool {
+    if filter.is_null() || event.is_null() {
+        return false;
+    }
+    let f_ref = &mut *filter;
+    let ev_ref = &*event;
+    panic::catch_unwind(panic::AssertUnwindSafe(|| f_ref.filter(ev_ref))).unwrap_or(false)
+}
+
+/// # Safety
+/// - `filter` must be a valid pointer returned by `edvs_stc_filter_create`, or null.
+#[no_mangle]
+pub unsafe extern "C" fn edvs_stc_filter_destroy(filter: *mut StcFilter) {
+    if !filter.is_null() {
+        drop(Box::from_raw(filter));
+    }
+}
+
+// --- EventRateStats FFI ---
+
+#[no_mangle]
+pub extern "C" fn edvs_rate_stats_create(window_us: i64) -> *mut EventRateStats {
+    let result = panic::catch_unwind(|| Box::new(EventRateStats::new(window_us)));
+    match result {
+        Ok(s) => Box::into_raw(s),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// # Safety
+/// - `stats` and `event` must be valid, non-null pointers.
+///
+/// Returns the rate (events/sec) via `out_rate` if a window boundary was crossed.
+/// Returns true if a rate was computed.
+#[no_mangle]
+pub unsafe extern "C" fn edvs_rate_stats_record(
+    stats: *mut EventRateStats,
+    event: *const Event,
+    out_rate: *mut f64,
+) -> bool {
+    if stats.is_null() || event.is_null() {
+        return false;
+    }
+    let s_ref = &mut *stats;
+    let ev_ref = &*event;
+    let result =
+        panic::catch_unwind(panic::AssertUnwindSafe(|| s_ref.record(ev_ref))).unwrap_or(None);
+    match result {
+        Some(rate) => {
+            if !out_rate.is_null() {
+                *out_rate = rate;
+            }
+            true
+        }
+        None => false,
+    }
+}
+
+/// # Safety
+/// - `stats` must be a valid pointer returned by `edvs_rate_stats_create`, or null.
+#[no_mangle]
+pub unsafe extern "C" fn edvs_rate_stats_last_rate(stats: *const EventRateStats) -> f64 {
+    if stats.is_null() {
+        return 0.0;
+    }
+    let s_ref = &*stats;
+    panic::catch_unwind(panic::AssertUnwindSafe(|| s_ref.last_rate())).unwrap_or(0.0)
+}
+
+/// # Safety
+/// - `stats` must be a valid pointer returned by `edvs_rate_stats_create`, or null.
+#[no_mangle]
+pub unsafe extern "C" fn edvs_rate_stats_peak_rate(stats: *const EventRateStats) -> f64 {
+    if stats.is_null() {
+        return 0.0;
+    }
+    let s_ref = &*stats;
+    panic::catch_unwind(panic::AssertUnwindSafe(|| s_ref.peak_rate())).unwrap_or(0.0)
+}
+
+/// # Safety
+/// - `stats` must be a valid pointer returned by `edvs_rate_stats_create`, or null.
+#[no_mangle]
+pub unsafe extern "C" fn edvs_rate_stats_total_count(stats: *const EventRateStats) -> u64 {
+    if stats.is_null() {
+        return 0;
+    }
+    let s_ref = &*stats;
+    panic::catch_unwind(panic::AssertUnwindSafe(|| s_ref.total_count())).unwrap_or(0)
+}
+
+/// # Safety
+/// - `stats` must be a valid pointer returned by `edvs_rate_stats_create`, or null.
+#[no_mangle]
+pub unsafe extern "C" fn edvs_rate_stats_reset(stats: *mut EventRateStats) {
+    if !stats.is_null() {
+        let s_ref = &mut *stats;
+        let _ = panic::catch_unwind(panic::AssertUnwindSafe(|| s_ref.reset()));
+    }
+}
+
+/// # Safety
+/// - `stats` must be a valid pointer returned by `edvs_rate_stats_create`, or null.
+#[no_mangle]
+pub unsafe extern "C" fn edvs_rate_stats_destroy(stats: *mut EventRateStats) {
+    if !stats.is_null() {
+        drop(Box::from_raw(stats));
+    }
+}
+
+// --- MaskFilter FFI ---
+
+#[no_mangle]
+pub extern "C" fn edvs_mask_filter_create(width: u32, height: u32) -> *mut MaskFilter {
+    let result = panic::catch_unwind(|| Box::new(MaskFilter::new(width, height)));
+    match result {
+        Ok(m) => Box::into_raw(m),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// # Safety
+/// - `filter` and `event` must be valid, non-null pointers.
+#[no_mangle]
+pub unsafe extern "C" fn edvs_mask_filter_process(
+    filter: *const MaskFilter,
+    event: *const Event,
+) -> bool {
+    if filter.is_null() || event.is_null() {
+        return false;
+    }
+    let f_ref = &*filter;
+    let ev_ref = &*event;
+    panic::catch_unwind(panic::AssertUnwindSafe(|| f_ref.filter(ev_ref))).unwrap_or(false)
+}
+
+/// # Safety
+/// - `filter` must be valid and non-null.
+#[no_mangle]
+pub unsafe extern "C" fn edvs_mask_filter_set_pixel(
+    filter: *mut MaskFilter,
+    x: u16,
+    y: u16,
+    enabled: bool,
+) {
+    if !filter.is_null() {
+        let f_ref = &mut *filter;
+        let _ = panic::catch_unwind(panic::AssertUnwindSafe(|| f_ref.set_pixel(x, y, enabled)));
+    }
+}
+
+/// # Safety
+/// - `filter` must be valid and non-null.
+#[no_mangle]
+pub unsafe extern "C" fn edvs_mask_filter_set_rect(
+    filter: *mut MaskFilter,
+    x_min: u16,
+    y_min: u16,
+    x_max: u16,
+    y_max: u16,
+    enabled: bool,
+) {
+    if !filter.is_null() {
+        let f_ref = &mut *filter;
+        let _ = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+            f_ref.set_rect(x_min, y_min, x_max, y_max, enabled)
+        }));
+    }
+}
+
+/// # Safety
+/// - `filter` must be a valid pointer returned by `edvs_mask_filter_create`, or null.
+#[no_mangle]
+pub unsafe extern "C" fn edvs_mask_filter_destroy(filter: *mut MaskFilter) {
+    if !filter.is_null() {
+        drop(Box::from_raw(filter));
     }
 }
