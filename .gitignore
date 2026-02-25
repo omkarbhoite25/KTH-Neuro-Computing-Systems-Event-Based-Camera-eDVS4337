@@ -2,3 +2,6 @@
 build/
 devel/
 .catkin_workspace
+
+# Rust build artifacts
+**/target/
