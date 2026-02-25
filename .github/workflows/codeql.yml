@@ -49,7 +49,7 @@ jobs:
         run: |
           add-apt-repository ppa:inivation-ppa/inivation -y
           apt-get update
-          apt-get install -y libcaer-dev libusb-1.0-0-dev libserialport-dev
+          apt-get install -y libcaer-dev libusb-1.0-0-dev libserialport-dev libopencv-dev
 
       - name: Build for CodeQL analysis
         shell: bash
