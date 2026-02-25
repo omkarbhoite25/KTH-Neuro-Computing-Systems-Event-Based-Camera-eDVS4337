@@ -57,7 +57,7 @@ impl TemporalFilter {
                 }
                 let neighbor_idx = ny * self.width + nx;
                 let neighbor_ts = self.last_timestamp[neighbor_idx];
-                if neighbor_ts > 0 && ts.saturating_sub(neighbor_ts).abs() <= self.threshold_us {
+                if neighbor_ts > 0 && ts.abs_diff(neighbor_ts) <= self.threshold_us as u64 {
                     return true;
                 }
             }
