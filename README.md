@@ -52,9 +52,9 @@ Unlike a conventional frame-based camera that captures entire images at a fixed 
 | Property | Frame Camera | Event Camera (eDVS4337) |
 |:---------|:-------------|:------------------------|
 | **Output** | Full image at fixed intervals | Sparse stream of change events |
-| **Temporal resolution** | ~33 ms (30 fps) | ~1 us (microsecond) |
+| **Temporal resolution** | ~33 ms (30 fps) | 15 us per event [(Lichtsteiner et al. 2008)](https://ieeexplore.ieee.org/document/4444573/) |
 | **Redundancy** | High (unchanged pixels re-transmitted) | None (only changes reported) |
-| **Dynamic range** | ~60 dB | >120 dB |
+| **Dynamic range** | ~60 dB (typical CMOS) | 120 dB [(DVS128 datasheet)](https://docs.inivation.com/_static/hardware_guides/dvs128.pdf) |
 | **Motion blur** | Present at high speeds | Eliminated |
 | **Data rate** | Constant (resolution x framerate) | Proportional to scene activity |
 
