@@ -16,6 +16,12 @@ use edvs_processing::stc::StcFilter;
 use edvs_processing::time_surface::TimeSurface;
 use edvs_processing::transform::{SpatialTransform, TransformType};
 
+use edvs_processing::corner::HarrisCornerDetector;
+use edvs_processing::frequency::FrequencyEstimator;
+use edvs_processing::optical_flow::OpticalFlowEstimator;
+use edvs_processing::sits::SpeedInvariantTimeSurface;
+use edvs_processing::voxel_grid::VoxelGrid;
+
 // ---------------------------------------------------------------------------
 // Full pipeline integration tests: temporal -> hot pixel -> accumulator
 // ---------------------------------------------------------------------------
@@ -1039,4 +1045,363 @@ fn test_ffi_mask_round_trip() {
 
         ffi::edvs_mask_filter_destroy(m);
     }
+}
+
+// =========================================================================
+// Phase 3: Speed-Invariant Time Surface integration
+// =========================================================================
+
+#[test]
+fn test_pipeline_sits_rank_ordering() {
+    let mut temporal = TemporalFilter::new(16, 16, 5000);
+    let mut sits = SpeedInvariantTimeSurface::new(16, 16, 1);
+
+    // Create correlated events that pass temporal filter
+    temporal.filter(&Event::new(7, 7, 100_000, 1));
+    let events = vec![
+        Event::new(7, 8, 101_000, 1),
+        Event::new(8, 7, 102_000, 1),
+        Event::new(8, 8, 103_000, 1),
+    ];
+
+    for ev in &events {
+        if temporal.filter(ev) {
+            sits.update(ev);
+        }
+    }
+
+    let ctx = sits.get_context(8, 8);
+    assert_eq!(ctx.len(), 9);
+    // The most recent event at (8,8) should have rank 1.0
+    assert!((ctx[4] - 1.0).abs() < 0.01);
+}
+
+// =========================================================================
+// Phase 3: Voxel Grid integration
+// =========================================================================
+
+#[test]
+fn test_pipeline_voxel_grid_with_filters() {
+    let polarity = PolarityFilter::new(PolarityMode::Both);
+    let mut vg = VoxelGrid::new(16, 16, 5);
+    vg.set_time_window(0, 1_000_000);
+
+    for i in 0..50 {
+        let ev = Event::new((i % 16) as u16, (i / 16) as u16, i as i64 * 20_000, 1);
+        if polarity.filter(&ev) {
+            vg.add_event(&ev);
+        }
+    }
+
+    // Grid should have non-zero values
+    assert!(vg.get_grid().iter().any(|&v| v != 0.0));
+}
+
+// =========================================================================
+// Phase 3: Corner Detector integration
+// =========================================================================
+
+#[test]
+fn test_pipeline_corner_with_denoise() {
+    let mut temporal = TemporalFilter::new(16, 16, 5000);
+    let mut corner = HarrisCornerDetector::new(16, 16, 0.04, 0.0);
+
+    // Seed the time surface with a corner-like pattern
+    // Top-left quadrant at t=100k, top-right at t=200k
+    for y in 0..8u16 {
+        for x in 0..8u16 {
+            temporal.filter(&Event::new(x, y, 100_000, 1));
+            corner.process(&Event::new(x, y, 100_000, 1));
+        }
+        for x in 8..16u16 {
+            temporal.filter(&Event::new(x, y, 200_000, 1));
+            corner.process(&Event::new(x, y, 200_000, 1));
+        }
+    }
+    for y in 8..16u16 {
+        for x in 0..8u16 {
+            temporal.filter(&Event::new(x, y, 300_000, 1));
+            corner.process(&Event::new(x, y, 300_000, 1));
+        }
+        for x in 8..16u16 {
+            temporal.filter(&Event::new(x, y, 400_000, 1));
+            corner.process(&Event::new(x, y, 400_000, 1));
+        }
+    }
+
+    // The junction at (8,8) should have corner response
+    let response = corner.query_response(8, 8);
+    assert!(response > 0.0, "expected corner at junction, got {}", response);
+}
+
+// =========================================================================
+// Phase 3: Frequency Estimator integration
+// =========================================================================
+
+#[test]
+fn test_pipeline_frequency_with_mask() {
+    let mut mask = MaskFilter::new(8, 8);
+    let mut freq = FrequencyEstimator::new(8, 8, 8);
+
+    // Mask out a corner
+    mask.set_rect(0, 0, 1, 1, false);
+
+    // 200 Hz signal at pixel (4,4) = 5000 us period
+    for i in 0..8 {
+        let ev = Event::new(4, 4, i * 5000, 1);
+        if mask.filter(&ev) {
+            freq.record(&ev);
+        }
+    }
+
+    let f = freq.estimate_frequency(4, 4).unwrap();
+    assert!(
+        (f - 200.0).abs() < 20.0,
+        "expected ~200 Hz, got {} Hz",
+        f
+    );
+
+    // Masked pixel should have no data
+    let ev_masked = Event::new(0, 0, 100_000, 1);
+    if mask.filter(&ev_masked) {
+        freq.record(&ev_masked);
+    }
+    assert!(freq.estimate_frequency(0, 0).is_none());
+}
+
+// =========================================================================
+// Phase 3: Optical Flow integration
+// =========================================================================
+
+#[test]
+fn test_pipeline_optical_flow_horizontal_motion() {
+    let mut of = OpticalFlowEstimator::new(32, 32, 2);
+
+    // Populate a horizontal motion pattern: t increases with x
+    for y in 10..22u16 {
+        for x in 10..22u16 {
+            of.process(&Event::new(x, y, x as i64 * 1000, 1));
+        }
+    }
+
+    // Query flow at center of the pattern
+    let flow = of.process(&Event::new(16, 16, 16000, 1));
+    assert!(flow.is_some(), "expected flow to be estimated");
+    if let Some(f) = flow {
+        // Dominant horizontal motion expected
+        assert!(
+            f.vx.abs() > 50.0,
+            "expected significant horizontal flow, vx={}",
+            f.vx
+        );
+    }
+}
+
+// =========================================================================
+// Phase 3: Full combined pipeline
+// =========================================================================
+
+#[test]
+fn test_phase3_full_pipeline() {
+    let mut temporal = TemporalFilter::new(32, 32, 5000);
+    let mut refractory = RefractoryFilter::new(32, 32, 500);
+    let polarity = PolarityFilter::new(PolarityMode::Both);
+    let mut sits = SpeedInvariantTimeSurface::new(32, 32, 2);
+    let mut corner = HarrisCornerDetector::new(32, 32, 0.04, 0.0);
+    let mut freq = FrequencyEstimator::new(32, 32, 8);
+    let mut stats = EventRateStats::new(100_000);
+
+    let mut passed = 0u32;
+    for i in 0..200 {
+        let x = (10 + i % 12) as u16;
+        let y = (10 + i / 12) as u16;
+        let ts = (i as i64 + 1) * 1000;
+        let ev = Event::new(x, y, ts, 1);
+
+        if temporal.filter(&ev) && refractory.filter(&ev) && polarity.filter(&ev) {
+            sits.update(&ev);
+            corner.process(&ev);
+            freq.record(&ev);
+            stats.record(&ev);
+            passed += 1;
+        }
+    }
+
+    assert!(passed > 0, "some events should pass the filter pipeline");
+    assert!(stats.total_count() > 0);
+}
+
+// =========================================================================
+// Phase 3: FFI null safety tests
+// =========================================================================
+
+#[test]
+fn test_ffi_sits_null_safety() {
+    unsafe {
+        ffi::edvs_sits_update(std::ptr::null_mut(), &Event::new(0, 0, 100, 1));
+        ffi::edvs_sits_reset(std::ptr::null_mut());
+        ffi::edvs_sits_destroy(std::ptr::null_mut());
+    }
+}
+
+#[test]
+fn test_ffi_sits_round_trip() {
+    unsafe {
+        let s = ffi::edvs_sits_create(8, 8, 1);
+        assert!(!s.is_null());
+
+        ffi::edvs_sits_update(s, &Event::new(4, 4, 100_000, 1));
+        ffi::edvs_sits_destroy(s);
+    }
+}
+
+#[test]
+fn test_ffi_voxel_grid_null_safety() {
+    unsafe {
+        ffi::edvs_voxel_grid_add_event(std::ptr::null_mut(), &Event::new(0, 0, 100, 1));
+        let mut len: usize = 0;
+        let ptr = ffi::edvs_voxel_grid_get_grid(std::ptr::null(), &mut len);
+        assert!(ptr.is_null());
+        ffi::edvs_voxel_grid_reset(std::ptr::null_mut());
+        ffi::edvs_voxel_grid_destroy(std::ptr::null_mut());
+    }
+}
+
+#[test]
+fn test_ffi_voxel_grid_round_trip() {
+    unsafe {
+        let vg = ffi::edvs_voxel_grid_create(4, 4, 5);
+        assert!(!vg.is_null());
+
+        ffi::edvs_voxel_grid_set_time_window(vg, 0, 1_000_000);
+        ffi::edvs_voxel_grid_add_event(vg, &Event::new(1, 1, 500_000, 1));
+
+        let mut len: usize = 0;
+        let ptr = ffi::edvs_voxel_grid_get_grid(vg, &mut len);
+        assert!(!ptr.is_null());
+        assert_eq!(len, 4 * 4 * 5);
+
+        ffi::edvs_voxel_grid_destroy(vg);
+    }
+}
+
+#[test]
+fn test_ffi_corner_detector_null_safety() {
+    unsafe {
+        let mut response: f64 = 0.0;
+        assert!(!ffi::edvs_corner_detector_process(
+            std::ptr::null_mut(),
+            &Event::new(0, 0, 100, 1),
+            &mut response
+        ));
+        ffi::edvs_corner_detector_reset(std::ptr::null_mut());
+        ffi::edvs_corner_detector_destroy(std::ptr::null_mut());
+    }
+}
+
+#[test]
+fn test_ffi_corner_detector_round_trip() {
+    unsafe {
+        let d = ffi::edvs_corner_detector_create(16, 16, 0.04, 0.0);
+        assert!(!d.is_null());
+
+        let mut response: f64 = 0.0;
+        ffi::edvs_corner_detector_process(d, &Event::new(4, 4, 100_000, 1), &mut response);
+
+        ffi::edvs_corner_detector_destroy(d);
+    }
+}
+
+#[test]
+fn test_ffi_frequency_estimator_null_safety() {
+    unsafe {
+        ffi::edvs_frequency_estimator_record(std::ptr::null_mut(), &Event::new(0, 0, 100, 1));
+        let f = ffi::edvs_frequency_estimator_estimate(std::ptr::null(), 0, 0);
+        assert!((f - (-1.0)).abs() < 0.01);
+        ffi::edvs_frequency_estimator_reset(std::ptr::null_mut());
+        ffi::edvs_frequency_estimator_destroy(std::ptr::null_mut());
+    }
+}
+
+#[test]
+fn test_ffi_frequency_estimator_round_trip() {
+    unsafe {
+        let fe = ffi::edvs_frequency_estimator_create(4, 4, 8);
+        assert!(!fe.is_null());
+
+        // 100 Hz = 10000 us period
+        for i in 0..8 {
+            ffi::edvs_frequency_estimator_record(fe, &Event::new(0, 0, i * 10_000, 1));
+        }
+
+        let freq = ffi::edvs_frequency_estimator_estimate(fe, 0, 0);
+        assert!(freq > 0.0, "expected positive frequency, got {}", freq);
+
+        ffi::edvs_frequency_estimator_destroy(fe);
+    }
+}
+
+#[test]
+fn test_ffi_optical_flow_null_safety() {
+    unsafe {
+        let mut vx: f64 = 0.0;
+        let mut vy: f64 = 0.0;
+        assert!(!ffi::edvs_optical_flow_process(
+            std::ptr::null_mut(),
+            &Event::new(0, 0, 100, 1),
+            &mut vx,
+            &mut vy
+        ));
+        ffi::edvs_optical_flow_reset(std::ptr::null_mut());
+        ffi::edvs_optical_flow_destroy(std::ptr::null_mut());
+    }
+}
+
+#[test]
+fn test_ffi_optical_flow_round_trip() {
+    unsafe {
+        let of = ffi::edvs_optical_flow_create(16, 16, 2);
+        assert!(!of.is_null());
+
+        let mut vx: f64 = 0.0;
+        let mut vy: f64 = 0.0;
+        ffi::edvs_optical_flow_process(of, &Event::new(8, 8, 100_000, 1), &mut vx, &mut vy);
+
+        ffi::edvs_optical_flow_destroy(of);
+    }
+}
+
+#[test]
+fn test_ffi_sits_invalid_params() {
+    // Zero radius
+    let s = ffi::edvs_sits_create(4, 4, 0);
+    assert!(s.is_null());
+}
+
+#[test]
+fn test_ffi_voxel_grid_invalid_params() {
+    // num_bins < 2
+    let vg = ffi::edvs_voxel_grid_create(4, 4, 1);
+    assert!(vg.is_null());
+}
+
+#[test]
+fn test_ffi_corner_detector_invalid_params() {
+    // Negative harris_k
+    let d = ffi::edvs_corner_detector_create(4, 4, -1.0, 0.0);
+    assert!(d.is_null());
+}
+
+#[test]
+fn test_ffi_frequency_estimator_invalid_params() {
+    // history_len < 3
+    let fe = ffi::edvs_frequency_estimator_create(4, 4, 2);
+    assert!(fe.is_null());
+}
+
+#[test]
+fn test_ffi_optical_flow_invalid_params() {
+    // Zero radius
+    let of = ffi::edvs_optical_flow_create(4, 4, 0);
+    assert!(of.is_null());
 }
