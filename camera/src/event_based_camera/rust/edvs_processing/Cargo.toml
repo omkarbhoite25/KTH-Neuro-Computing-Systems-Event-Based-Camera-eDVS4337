@@ -1,0 +1,14 @@
+[package]
+name = "edvs_processing"
+version = "0.1.0"
+edition = "2021"
+description = "Event processing library for the eDVS4337 neuromorphic camera"
+license = "MIT"
+
+[lib]
+name = "edvs_processing"
+crate-type = ["staticlib", "cdylib", "lib"]
+
+[[bin]]
+name = "edvs-process"
+path = "src/bin/edvs_process.rs"
