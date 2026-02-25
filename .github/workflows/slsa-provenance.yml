@@ -1,0 +1,77 @@
+name: SLSA3 Supply Chain Provenance
+
+on:
+  release:
+    types: [created]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      hashes: ${{ steps.hash.outputs.hashes }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup ROS
+        uses: ros-tooling/setup-ros@v0.7
+        with:
+          required-ros-distributions: noetic
+
+      - name: Install system dependencies
+        run: |
+          sudo add-apt-repository ppa:inivation-ppa/inivation -y
+          sudo apt-get update
+          sudo apt-get install -y libcaer-dev libusb-1.0-0-dev libserialport-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Rust crate
+        working-directory: camera/src/event_based_camera/rust/edvs_processing
+        run: cargo build --release
+
+      - name: Build ROS package
+        shell: bash
+        run: |
+          source /opt/ros/noetic/setup.bash
+          cd camera
+          catkin_make
+
+      - name: Generate hashes
+        id: hash
+        run: |
+          EDVS_BIN="camera/devel/lib/event_based_camera/edvs_camera"
+          RUST_LIB="camera/src/event_based_camera/rust/edvs_processing/target/release/libedvs_processing.so"
+          HASHES=""
+          for f in "$EDVS_BIN" "$RUST_LIB"; do
+            if [ -f "$f" ]; then
+              HASH=$(sha256sum "$f" | awk '{print $1}')
+              NAME=$(basename "$f")
+              HASHES="${HASHES}${HASH}  ${NAME}\n"
+            fi
+          done
+          echo "hashes=$(echo -e "$HASHES" | base64 -w0)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts
+          path: |
+            camera/devel/lib/event_based_camera/edvs_camera
+            camera/src/event_based_camera/rust/edvs_processing/target/release/libedvs_processing.so
+
+  provenance:
+    needs: build
+    permissions:
+      actions: read
+      id-token: write
+      contents: write
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects: ${{ needs.build.outputs.hashes }}
+      upload-assets: true
