@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04
     outputs:
       hashes: ${{ steps.hash.outputs.hashes }}
     permissions:
@@ -17,10 +17,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup ROS
-        uses: ros-tooling/setup-ros@v0.7
-        with:
-          required-ros-distributions: noetic
+      - name: Setup ROS Noetic repository
+        run: |
+          sudo sh -c 'echo "deb http://packages.ros.org/ros/ubuntu $(lsb_release -sc) main" > /etc/apt/sources.list.d/ros-latest.list'
+          sudo apt-key adv --keyserver 'hkp://keyserver.ubuntu.com:80' --recv-key C1CF6E31E6BADE86
+          sudo apt-get update
+
+      - name: Install ROS Noetic
+        run: sudo apt-get install -y ros-noetic-ros-base ros-noetic-catkin
 
       - name: Install system dependencies
         run: |
