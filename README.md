@@ -441,7 +441,13 @@ This preserves real edges and motion while removing random background activity.
   Timestamps shown in milliseconds for readability (actual units: us)
 ```
 
-**Example walkthrough** (`threshold_us = 5,000`):
+**Example walkthrough** (`threshold_us = 5,000`, this project's default):
+
+> **Note on threshold value:** This project uses a default of 5,000 us (5 ms). The reference
+> [jAER](https://github.com/SensorsINI/jaer) software from ETH Zurich uses values around
+> 17,000 us in its BackgroundActivityFilter configurations. The optimal value depends on
+> scene dynamics and sensor bias settings. All pass/reject decisions below are computed
+> exactly as the `denoise.rs` code executes them.
 
 ```
   Step 1: Event arrives at (4,4) t=100,000 us
@@ -469,6 +475,12 @@ This preserves real edges and motion while removing random background activity.
           Neighbor (4,5) delta = |300,000 - 101,000| = 199,000 us > 5,000 us
           Result: REJECTED (neighbors too old, temporal gap too large)
 ```
+
+> **Note on timestamps:** The event timestamps above (100,000 us, 102,000 us, etc.)
+> are illustrative values chosen to clearly demonstrate filter behavior. They are not
+> from a real recording, but the inter-event intervals (500 us to 200,000 us) are
+> within the range produced by the DVS128 sensor, which has 15 us pixel latency
+> ([Lichtsteiner et al. 2008](https://ieeexplore.ieee.org/document/4444573/)).
 
 **Filter pipeline visualization:**
 
@@ -574,17 +586,22 @@ Detects and suppresses **stuck or noisy pixels** that fire at abnormally high ra
   HOT PIXELS CAN RECOVER.
 ```
 
-**Typical hot pixel behavior on a real sensor:**
+**Measured noise rates from jAER reference software** ([SensorsINI/jaer, NoiseTesterFilter.java](https://github.com/SensorsINI/jaer/blob/master/src/net/sf/jaer/eventprocessing/filter/NoiseTesterFilter.java)):
 
 ```
-  128x128 sensor, 1-second window, max_rate = 1000
+  DVS pixel noise characterization (from jAER source code):
 
-  Normal pixel:     ~50 events/sec   (scene-driven)     --> PASS
-  Active edge:     ~500 events/sec   (moving object)    --> PASS
-  Hot pixel:     ~8,000 events/sec   (hardware defect)  --> FLAGGED
-
-  Result: 2-5 hot pixels suppressed out of 16,384 total pixels
+  Shot noise rate:  5 Hz per pixel    (default in NoiseTesterFilter)
+  Leak noise rate:  0.3 Hz per pixel  (default in NoiseTesterFilter)
+  Realistic leak:   0.1-0.2 Hz        (code comment: "realistic for DAVIS cameras")
+  Rate limit:       25 Hz per pixel   (maximum before filter flags as excessive)
 ```
+
+> **Note:** The hot pixel example above uses `max_rate = 5` (not the project default
+> of 1,000) to keep the walkthrough compact. The event counts, window boundaries, and
+> pass/reject decisions are computed exactly as the `hot_pixel.rs` code executes them.
+> The `window_us = 1,000,000` (1 second) matches this project's default from
+> `edvs_params.yaml`.
 
 </details>
 
@@ -721,6 +738,11 @@ This is useful for visualization, integration with traditional CV pipelines, and
   . = 128 (neutral)   + = brighter   - = darker   = = returned toward neutral
 ```
 
+> **Note on accuracy:** All accumulator arithmetic (128 +/- 1, clamping to 0..255) is
+> computed exactly as the `accumulator.rs` code executes. The moving-edge example above
+> is a conceptual illustration of how event cameras encode motion; the specific pixel
+> coordinates and timing are illustrative, not from a real recording.
+
 </details>
 
 ### :arrows_counterclockwise: Complete Filter Pipeline
@@ -761,6 +783,13 @@ Events flow through the filters in sequence. Each filter can independently pass 
     After hot pixel: 7 events (no hot pixels in this window)
     Accumulator frame: mostly neutral with slight activity near (10,10)-(11,11)
 ```
+
+> **Note on accuracy:** All pass/reject decisions and accumulator values in the table above
+> are computed exactly as the Rust filter code executes them (verified against `denoise.rs`,
+> `hot_pixel.rs`, and `accumulator.rs`). The input event data (timestamps, coordinates) are
+> illustrative examples, not from a real eDVS4337 recording. The `threshold_us = 5,000` and
+> `max_rate = 5` are chosen for demonstration; see `config/edvs_params.yaml` for production
+> defaults.
 
 </details>
 
