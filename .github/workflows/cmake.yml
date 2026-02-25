@@ -1,0 +1,42 @@
+name: CMake Build & Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup ROS
+        uses: ros-tooling/setup-ros@v0.7
+        with:
+          required-ros-distributions: noetic
+
+      - name: Install system dependencies
+        run: |
+          sudo add-apt-repository ppa:inivation-ppa/inivation -y
+          sudo apt-get update
+          sudo apt-get install -y libcaer-dev libusb-1.0-0-dev libserialport-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Rust crate
+        working-directory: camera/src/event_based_camera/rust/edvs_processing
+        run: cargo build --release
+
+      - name: Run Rust tests
+        working-directory: camera/src/event_based_camera/rust/edvs_processing
+        run: cargo test --release
+
+      - name: Build ROS package
+        shell: bash
+        run: |
+          source /opt/ros/noetic/setup.bash
+          cd camera
+          catkin_make
