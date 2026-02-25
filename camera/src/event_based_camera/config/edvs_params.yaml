@@ -1,0 +1,13 @@
+# eDVS4337 Camera Node Parameters
+
+# Serial port device path (must be a character device under /dev/)
+serial_port: "/dev/ttyUSB0"
+
+# Temporal denoising filter (nearest-neighbor)
+enable_denoising: true
+denoise_threshold_us: 5000  # microseconds — events without a neighbor within this window are noise
+
+# Hot pixel filter
+enable_hot_pixel_filter: true
+hot_pixel_window_us: 1000000   # 1 second window
+hot_pixel_max_rate: 1000       # max events per pixel per window before marking as hot

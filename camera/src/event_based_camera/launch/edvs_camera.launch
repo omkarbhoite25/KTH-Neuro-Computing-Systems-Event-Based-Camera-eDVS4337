@@ -1,0 +1,5 @@
+<launch>
+  <node pkg="event_based_camera" type="edvs_camera" name="edvs_camera" output="screen">
+    <rosparam command="load" file="$(find event_based_camera)/config/edvs_params.yaml" />
+  </node>
+</launch>
