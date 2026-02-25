@@ -13,10 +13,14 @@ pub struct Accumulator {
 
 impl Accumulator {
     pub fn new(width: u32, height: u32) -> Self {
+        assert!(width > 0 && height > 0, "dimensions must be positive");
+        assert!(width <= crate::MAX_SENSOR_DIM && height <= crate::MAX_SENSOR_DIM,
+                "dimensions exceed maximum");
         let w = width as usize;
         let h = height as usize;
+        let n = w.checked_mul(h).expect("dimension overflow");
         Self {
-            frame: vec![128; w * h],
+            frame: vec![128; n],
             width: w,
             height: h,
         }
@@ -71,7 +75,8 @@ mod tests {
         let mut acc = Accumulator::new(4, 4);
         let ev = Event::new(1, 1, 100, 1); // ON
         acc.accumulate(&ev);
-        assert_eq!(acc.get_frame()[1 * 4 + 1], 129);
+        // Pixel (1,1) in a 4-wide grid: index = 1*4 + 1 = 5
+        assert_eq!(acc.get_frame()[5], 129);
     }
 
     #[test]
@@ -79,7 +84,8 @@ mod tests {
         let mut acc = Accumulator::new(4, 4);
         let ev = Event::new(1, 1, 100, -1); // OFF
         acc.accumulate(&ev);
-        assert_eq!(acc.get_frame()[1 * 4 + 1], 127);
+        // Pixel (1,1) in a 4-wide grid: index = 1*4 + 1 = 5
+        assert_eq!(acc.get_frame()[5], 127);
     }
 
     #[test]

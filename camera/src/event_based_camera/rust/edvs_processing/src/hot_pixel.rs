@@ -17,9 +17,14 @@ pub struct HotPixelFilter {
 
 impl HotPixelFilter {
     pub fn new(width: u32, height: u32, window_us: i64, max_rate: u32) -> Self {
+        assert!(width > 0 && height > 0, "dimensions must be positive");
+        assert!(width <= crate::MAX_SENSOR_DIM && height <= crate::MAX_SENSOR_DIM,
+                "dimensions exceed maximum");
+        assert!(window_us > 0, "window_us must be positive");
+        assert!(max_rate > 0, "max_rate must be positive");
         let w = width as usize;
         let h = height as usize;
-        let n = w * h;
+        let n = w.checked_mul(h).expect("dimension overflow");
         Self {
             event_counts: vec![0; n],
             width: w,

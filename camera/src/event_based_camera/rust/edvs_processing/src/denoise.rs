@@ -14,10 +14,15 @@ pub struct TemporalFilter {
 
 impl TemporalFilter {
     pub fn new(width: u32, height: u32, threshold_us: i64) -> Self {
+        assert!(width > 0 && height > 0, "dimensions must be positive");
+        assert!(width <= crate::MAX_SENSOR_DIM && height <= crate::MAX_SENSOR_DIM,
+                "dimensions exceed maximum");
+        assert!(threshold_us > 0, "threshold_us must be positive");
         let w = width as usize;
         let h = height as usize;
+        let n = w.checked_mul(h).expect("dimension overflow");
         Self {
-            last_timestamp: vec![0; w * h],
+            last_timestamp: vec![0; n],
             width: w,
             height: h,
             threshold_us,

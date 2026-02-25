@@ -55,6 +55,8 @@ include_directories(
 add_executable(edvs_camera
   src/edvs_driver_node.cpp
   src/edvs_driver.cpp
+  src/filter_pipeline.cpp
+  src/libcaer_edvs.cpp
   src/security.cpp
 )
 
